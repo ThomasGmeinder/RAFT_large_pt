@@ -14,11 +14,14 @@ with ROCm 7.2 on Ubuntu 24.04.
 | `--compile False --param_dtype fp32` | 67 ms | ~14.8 |
 | `--compile True --param_dtype fp32` | 53 ms | ~18.7 (1.26x) |
 | `--compile True --param_dtype bf16` | 51 ms | ~19.6 (1.32x) |
+| compiled fp16 autocast only (no corr patch) | 50 ms | ~20.1 (1.34x) |
 | Default (`--compile True --param_dtype fp16`) | 34 ms | ~29.7 (1.97x) |
 
-fp16 delivers the largest gain because the script patches the RAFT correlation
-block to run `grid_sample` and the correlation pyramid in half precision,
-which autocast alone cannot do.
+fp16/bf16 with autocast alone barely helps because `grid_sample` -- called 48
+times per forward pass -- is not in autocast's promotion list and stays in fp32.
+The script patches the RAFT correlation block to force `grid_sample` and the
+correlation pyramid into the target dtype, which is where the real speedup
+comes from.
 
 ## Setup
 
