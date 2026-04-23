@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import cv2
@@ -46,8 +47,15 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--compile",
-        action="store_true",
-        help="Use torch.compile for faster inference (slower first run)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use torch.compile (default: on; disable with --no-compile)",
+    )
+    p.add_argument(
+        "--bf16",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use bfloat16 mixed precision (default: on; disable with --no-bf16)",
     )
     return p.parse_args()
 
@@ -142,8 +150,10 @@ def main() -> None:
     if args.compile:
         model = torch.compile(model)
     transforms = weights.transforms()
-    mode = "compiled" if args.compile else "eager"
-    print(f"Model  : RAFT Large  ({sum(p.numel() for p in model.parameters()):,} params, {mode})")
+    tags = []
+    tags.append("compiled" if args.compile else "eager")
+    tags.append("bf16" if args.bf16 else "fp32")
+    print(f"Model  : RAFT Large  ({sum(p.numel() for p in model.parameters()):,} params, {', '.join(tags)})")
 
     # ---- extract frames ----
     rgb1, rgb2 = extract_frames(args.video, args.frame)
@@ -172,14 +182,16 @@ def main() -> None:
     img1_d = img1_p.to(device)
     img2_d = img2_p.to(device)
 
+    amp_ctx = torch.autocast(device.type, dtype=torch.bfloat16) if args.bf16 else nullcontext()
+
     # Warmup pass (compiles HIP kernels on first run)
-    with torch.no_grad():
+    with torch.no_grad(), amp_ctx:
         _ = model(img1_d, img2_d)
 
     torch.cuda.synchronize() if device.type == "cuda" else None
     t0 = time.perf_counter()
 
-    with torch.no_grad():
+    with torch.no_grad(), amp_ctx:
         list_of_flows = model(img1_d, img2_d)
 
     torch.cuda.synchronize() if device.type == "cuda" else None

@@ -11,8 +11,10 @@ with ROCm 7.2 on Ubuntu 24.04.
 
 | Mode | Latency | Frame pairs/sec |
 |------|---------|-----------------|
-| Eager (default) | 67 ms | ~14.9 |
-| `--compile` | 53 ms | ~18.8 (1.26x) |
+| `--no-compile --no-bf16` | 67 ms | ~14.8 |
+| `--no-compile` (bf16 only) | 69 ms | ~14.4 |
+| `--no-bf16` (compile only) | 53 ms | ~18.7 |
+| Default (compile + bf16) | 50 ms | ~20.0 (1.35x) |
 
 ## Setup
 
@@ -41,7 +43,8 @@ python infer_optical_flow.py --video input.mp4
 | `--frame` | `0` | 0-based index of the first frame; second frame is `frame + 1` |
 | `--output` | `flow_output.png` | Path for the saved composite image |
 | `--resize` | auto | Explicit `HxW` (e.g. `520x960`); if omitted, dims are rounded down to a multiple of 8 |
-| `--compile` | off | Use `torch.compile` for faster inference (slower first run) |
+| `--compile / --no-compile` | on | `torch.compile` for faster inference (slower first run) |
+| `--bf16 / --no-bf16` | on | bfloat16 mixed precision for reduced memory bandwidth |
 
 ### Example output
 
@@ -49,9 +52,9 @@ The script saves a side-by-side PNG: **frame 1 | frame 2 | flow visualization**.
 
 ```
 Device : AMD Radeon Graphics  (ROCm/HIP)
-Model  : RAFT Large  (5,257,536 params, compiled)
+Model  : RAFT Large  (5,257,536 params, compiled, bf16)
 Video  : input.mp4  (672x376)
 Frames : 0 and 1
-Latency: 53.3 ms  (excluding warmup)
+Latency: 50.0 ms  (excluding warmup)
 Saved  : /path/to/flow_output.png  (2016x376)
 ```
