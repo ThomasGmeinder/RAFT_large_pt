@@ -39,6 +39,24 @@ fp16 because its 7-bit mantissa (vs fp16's 10-bit) cannot represent the small
 coordinate deltas that accumulate across RAFT's 12-iteration GRU loop. fp16 is
 the better choice for RAFT: both faster (34 ms vs 51 ms) and far more accurate.
 
+### Why fp16 is faster than bf16 on RDNA 3.5
+
+Microbenchmarks on gfx1151 reveal that fp16 and bf16 do not perform equally
+across all operation types:
+
+| Operation (RAFT-sized) | fp32 | fp16 | bf16 |
+|------------------------|------|------|------|
+| Element-wise FMA | 30 us | 17 us (1.75x) | 17 us (1.74x) |
+| grid_sample | 1029 us | 780 us (1.32x) | 782 us (1.32x) |
+| matmul | 179 us | 18 us (10x) | 19 us (9.2x) |
+| conv2d 3x3 (128ch, 47x84) | 75 us | 47 us (1.58x) | 84 us (0.89x) |
+
+Element-wise ops, grid_sample, and matmul are equally fast in fp16 and bf16.
+However, bf16 conv2d on small feature maps is **slower than fp32** -- the
+MIOpen kernel library on ROCm 7.2 selects a suboptimal code path for bf16 at
+this tensor size. Since RAFT runs many small convolutions in its 12-iteration
+GRU loop, this regression erases any bandwidth savings from smaller tensors.
+
 ## Setup
 
 ```bash
