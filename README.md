@@ -57,6 +57,14 @@ MIOpen kernel library on ROCm 7.2 selects a suboptimal code path for bf16 at
 this tensor size. Since RAFT runs many small convolutions in its 12-iteration
 GRU loop, this regression erases any bandwidth savings from smaller tensors.
 
+**How this was measured:** each operation was run in isolation on the GPU using
+tensor sizes matching the RAFT model's internal feature maps. A warmup of 50
+iterations was followed by 1000 timed iterations, with `torch.cuda.synchronize()`
+before and after to ensure all GPU work completes before reading the wall clock.
+The end-to-end RAFT benchmarks (performance table above) used 50 timed iterations
+after a 5-iteration warmup.  All numbers are from a single-run session on the
+hardware listed at the top of this file.
+
 ## Setup
 
 ```bash
