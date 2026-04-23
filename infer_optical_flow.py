@@ -44,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Explicit HxW to resize frames to, e.g. 520x960",
     )
+    p.add_argument(
+        "--compile",
+        action="store_true",
+        help="Use torch.compile for faster inference (slower first run)",
+    )
     return p.parse_args()
 
 
@@ -134,8 +139,11 @@ def main() -> None:
     # ---- load model ----
     weights = Raft_Large_Weights.DEFAULT
     model = raft_large(weights=weights, progress=True).to(device).eval()
+    if args.compile:
+        model = torch.compile(model)
     transforms = weights.transforms()
-    print(f"Model  : RAFT Large  ({sum(p.numel() for p in model.parameters()):,} params)")
+    mode = "compiled" if args.compile else "eager"
+    print(f"Model  : RAFT Large  ({sum(p.numel() for p in model.parameters()):,} params, {mode})")
 
     # ---- extract frames ----
     rgb1, rgb2 = extract_frames(args.video, args.frame)

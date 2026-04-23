@@ -7,6 +7,13 @@ on an AMD GPU via PyTorch + ROCm.
 Tested on **AMD Ryzen AI MAX+ 395 / Radeon 8060S (Strix Halo, gfx1151)**
 with ROCm 7.2 on Ubuntu 24.04.
 
+**Performance** at 672x376 on the integrated GPU:
+
+| Mode | Latency | Frame pairs/sec |
+|------|---------|-----------------|
+| Eager (default) | 67 ms | ~14.9 |
+| `--compile` | 53 ms | ~18.8 (1.26x) |
+
 ## Setup
 
 ```bash
@@ -34,6 +41,7 @@ python infer_optical_flow.py --video input.mp4
 | `--frame` | `0` | 0-based index of the first frame; second frame is `frame + 1` |
 | `--output` | `flow_output.png` | Path for the saved composite image |
 | `--resize` | auto | Explicit `HxW` (e.g. `520x960`); if omitted, dims are rounded down to a multiple of 8 |
+| `--compile` | off | Use `torch.compile` for faster inference (slower first run) |
 
 ### Example output
 
@@ -41,9 +49,9 @@ The script saves a side-by-side PNG: **frame 1 | frame 2 | flow visualization**.
 
 ```
 Device : AMD Radeon Graphics  (ROCm/HIP)
-Model  : RAFT Large  (5,257,536 params)
+Model  : RAFT Large  (5,257,536 params, compiled)
 Video  : input.mp4  (672x376)
 Frames : 0 and 1
-Latency: 67.0 ms  (excluding warmup)
+Latency: 53.3 ms  (excluding warmup)
 Saved  : /path/to/flow_output.png  (2016x376)
 ```
