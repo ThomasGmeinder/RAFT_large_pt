@@ -21,7 +21,50 @@ import numpy as np
 import torch
 import torchvision.transforms.functional as F
 from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
+from torchvision.models.optical_flow._utils import grid_sample as _grid_sample
+from torchvision.models.optical_flow.raft import CorrBlock
 from torchvision.utils import flow_to_image
+
+
+def _patch_corr_block_dtype(dtype: torch.dtype) -> None:
+    """Monkey-patch CorrBlock so the correlation pyramid and grid_sample run in *dtype*.
+
+    By default autocast does not cover grid_sample or the correlation volume
+    storage, leaving them in fp32.  This patch forces both into the target
+    dtype, which roughly halves memory-bandwidth pressure in the 12-iteration
+    update loop.
+    """
+    _orig_build = CorrBlock.build_pyramid.__wrapped__ if hasattr(CorrBlock.build_pyramid, "__wrapped__") else CorrBlock.build_pyramid  # noqa: E501
+    _orig_index = CorrBlock.index_pyramid.__wrapped__ if hasattr(CorrBlock.index_pyramid, "__wrapped__") else CorrBlock.index_pyramid  # noqa: E501
+
+    def _build(self, fmap1, fmap2):
+        _orig_build(self, fmap1.to(dtype), fmap2.to(dtype))
+        self.corr_pyramid = [v.to(dtype) for v in self.corr_pyramid]
+
+    def _index(self, centroids_coords):
+        centroids_coords = centroids_coords.to(dtype)
+        side = 2 * self.radius + 1
+        di = torch.linspace(-self.radius, self.radius, side)
+        dj = torch.linspace(-self.radius, self.radius, side)
+        delta = torch.stack(torch.meshgrid(di, dj, indexing="ij"), dim=-1)
+        delta = delta.to(centroids_coords.device, dtype=dtype).view(1, side, side, 2)
+
+        bs, _, h, w = centroids_coords.shape
+        centroids_coords = centroids_coords.permute(0, 2, 3, 1).reshape(bs * h * w, 1, 1, 2)
+
+        indexed = []
+        for corr_vol in self.corr_pyramid:
+            coords = centroids_coords + delta
+            out = _grid_sample(corr_vol, coords, align_corners=True, mode="bilinear")
+            indexed.append(out.view(bs, h, w, -1))
+            centroids_coords = centroids_coords / 2
+
+        return torch.cat(indexed, dim=-1).permute(0, 3, 1, 2).contiguous()
+
+    _build.__wrapped__ = _orig_build  # type: ignore[attr-defined]
+    _index.__wrapped__ = _orig_index  # type: ignore[attr-defined]
+    CorrBlock.build_pyramid = _build  # type: ignore[assignment]
+    CorrBlock.index_pyramid = _index  # type: ignore[assignment]
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,8 +98,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--param_dtype",
         choices=["fp32", "fp16", "bf16"],
-        default="bf16",
-        help="Inference precision: fp32, fp16, or bf16 (default: bf16)",
+        default="fp16",
+        help="Inference precision: fp32, fp16, or bf16 (default: fp16)",
     )
     return p.parse_args()
 
@@ -145,6 +188,12 @@ def main() -> None:
     else:
         print("WARNING: No GPU detected — running on CPU (will be slow).")
 
+    # ---- precision setup ----
+    dtype_map = {"fp32": None, "fp16": torch.float16, "bf16": torch.bfloat16}
+    amp_dtype = dtype_map[args.param_dtype]
+    if amp_dtype is not None:
+        _patch_corr_block_dtype(amp_dtype)
+
     # ---- load model ----
     weights = Raft_Large_Weights.DEFAULT
     model = raft_large(weights=weights, progress=True).to(device).eval()
@@ -183,8 +232,6 @@ def main() -> None:
     img1_d = img1_p.to(device)
     img2_d = img2_p.to(device)
 
-    dtype_map = {"fp32": None, "fp16": torch.float16, "bf16": torch.bfloat16}
-    amp_dtype = dtype_map[args.param_dtype]
     amp_ctx = torch.autocast(device.type, dtype=amp_dtype) if amp_dtype else nullcontext()
 
     # Warmup pass (compiles HIP kernels on first run)

@@ -12,9 +12,13 @@ with ROCm 7.2 on Ubuntu 24.04.
 | Mode | Latency | Frame pairs/sec |
 |------|---------|-----------------|
 | `--compile False --param_dtype fp32` | 67 ms | ~14.8 |
-| `--compile False --param_dtype bf16` | 69 ms | ~14.4 |
-| `--compile True --param_dtype fp32` | 53 ms | ~18.7 |
-| Default (`--compile True --param_dtype bf16`) | 50 ms | ~20.0 (1.35x) |
+| `--compile True --param_dtype fp32` | 53 ms | ~18.7 (1.26x) |
+| `--compile True --param_dtype bf16` | 51 ms | ~19.6 (1.32x) |
+| Default (`--compile True --param_dtype fp16`) | 34 ms | ~29.7 (1.97x) |
+
+fp16 delivers the largest gain because the script patches the RAFT correlation
+block to run `grid_sample` and the correlation pyramid in half precision,
+which autocast alone cannot do.
 
 ## Setup
 
@@ -44,7 +48,7 @@ python infer_optical_flow.py --video input.mp4
 | `--output` | `flow_output.png` | Path for the saved composite image |
 | `--resize` | auto | Explicit `HxW` (e.g. `520x960`); if omitted, dims are rounded down to a multiple of 8 |
 | `--compile` | `True` | `torch.compile` for faster inference (set `False` to disable) |
-| `--param_dtype` | `bf16` | Inference precision: `fp32`, `fp16`, or `bf16` |
+| `--param_dtype` | `fp16` | Inference precision: `fp32`, `fp16`, or `bf16` |
 
 ### Example output
 
@@ -52,9 +56,9 @@ The script saves a side-by-side PNG: **frame 1 | frame 2 | flow visualization**.
 
 ```
 Device : AMD Radeon Graphics  (ROCm/HIP)
-Model  : RAFT Large  (5,257,536 params, compiled, bf16)
+Model  : RAFT Large  (5,257,536 params, compiled, fp16)
 Video  : input.mp4  (672x376)
 Frames : 0 and 1
-Latency: 50.0 ms  (excluding warmup)
+Latency: 34.3 ms  (excluding warmup)
 Saved  : /path/to/flow_output.png  (2016x376)
 ```
