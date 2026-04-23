@@ -90,20 +90,51 @@ python infer_optical_flow.py --video input.mp4
 |------|---------|-------------|
 | `--video` | *(required)* | Path to the input video file |
 | `--frame` | `0` | 0-based index of the first frame; second frame is `frame + 1` |
-| `--output` | `flow_output.png` | Path for the saved composite image |
+| `--output` | `.png` / `.mp4` | Output path (auto-selects format based on `--realtime`) |
 | `--resize` | auto | Explicit `HxW` (e.g. `520x960`); if omitted, dims are rounded down to a multiple of 8 |
 | `--compile` | `True` | `torch.compile` for faster inference (set `False` to disable) |
 | `--param_dtype` | `fp16` | Inference precision: `fp32`, `fp16`, or `bf16` |
+| `--realtime` | off | Process every frame pair and write a side-by-side MP4 video |
 
-### Example output
+### Single-pair mode (default)
 
-The script saves a side-by-side PNG: **frame 1 | frame 2 | flow visualization**.
+Saves a side-by-side PNG: **frame 1 | frame 2 | flow visualization**.
+
+```
+python infer_optical_flow.py --video input.mp4
+```
+
+### Full-video mode (`--realtime`)
+
+Processes all consecutive frame pairs and writes a side-by-side H.264 MP4:
+**original frame (left) | flow visualization (right)**.
+
+The output video is encoded at the measured inference throughput so it plays
+back in real time (1 second of video = 1 second of processing).
+
+```bash
+python infer_optical_flow.py --video input.mp4 --realtime --output flow_video.mp4
+```
 
 ```
 Device : AMD Radeon Graphics  (ROCm/HIP)
 Model  : RAFT Large  (5,257,536 params, compiled, fp16)
-Video  : input.mp4  (672x376)
-Frames : 0 and 1
-Latency: 34.3 ms  (excluding warmup)
-Saved  : /path/to/flow_output.png  (2016x376)
+Video  : input.mp4  (672x376, 1782 frames, 92.2 fps)
+Throughput: 33.5 ms/pair -> output video at 29.9 fps
+Processing 1781 frame pairs ...
+Done   : 1781 pairs, avg 36.8 ms/pair (27.2 pairs/sec)
+Saved  : /path/to/flow_video.mp4
 ```
+
+**Reading the flow visualization:** the right panel uses the standard optical
+flow color wheel -- each color represents a direction of motion, and brightness
+represents speed.  What to expect:
+
+- **Camera panning/translating:** a uniform color across the whole frame (all
+  pixels move together in the same direction).
+- **Moving objects:** distinct colored regions that stand out against the
+  background, with sharp edges at object boundaries.
+- **Camera stationary:** a noisy, multi-colored pattern.  This is normal --
+  RAFT detects sub-pixel displacements from sensor noise and compression
+  artifacts.  The motion magnitudes are very small (< 1 pixel) but the color
+  wheel amplifies their random directions.
