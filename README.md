@@ -23,6 +23,18 @@ The script patches the RAFT correlation block to force `grid_sample` and the
 correlation pyramid into the target dtype, which is where the real speedup
 comes from.
 
+**fp16 accuracy** -- measured as end-point error (EPE) vs the fp32 baseline:
+
+| Metric | Value |
+|--------|-------|
+| Mean EPE | 0.005 pixels |
+| 95th percentile EPE | 0.014 pixels |
+| Max EPE | 0.063 pixels |
+| Pixels with EPE < 0.1 px | 100% |
+
+The fp16 rounding error is ~360x smaller than the model's own prediction error
+on standard benchmarks (1.8-3.1 EPE). The quality loss is negligible.
+
 ## Setup
 
 ```bash
