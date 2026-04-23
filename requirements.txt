@@ -6,3 +6,5 @@
 numpy<2
 opencv-python>=4.5.0
 matplotlib>=3.7
+imageio>=2.31
+imageio-ffmpeg>=0.4
