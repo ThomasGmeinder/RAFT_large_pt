@@ -47,15 +47,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--compile",
-        action=argparse.BooleanOptionalAction,
+        type=lambda v: v.lower() not in ("0", "false", "no", "off"),
         default=True,
-        help="Use torch.compile (default: on; disable with --no-compile)",
+        metavar="BOOL",
+        help="Use torch.compile (default: True)",
     )
     p.add_argument(
-        "--bf16",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use bfloat16 mixed precision (default: on; disable with --no-bf16)",
+        "--param_dtype",
+        choices=["fp32", "fp16", "bf16"],
+        default="bf16",
+        help="Inference precision: fp32, fp16, or bf16 (default: bf16)",
     )
     return p.parse_args()
 
@@ -152,7 +153,7 @@ def main() -> None:
     transforms = weights.transforms()
     tags = []
     tags.append("compiled" if args.compile else "eager")
-    tags.append("bf16" if args.bf16 else "fp32")
+    tags.append(args.param_dtype)
     print(f"Model  : RAFT Large  ({sum(p.numel() for p in model.parameters()):,} params, {', '.join(tags)})")
 
     # ---- extract frames ----
@@ -182,7 +183,9 @@ def main() -> None:
     img1_d = img1_p.to(device)
     img2_d = img2_p.to(device)
 
-    amp_ctx = torch.autocast(device.type, dtype=torch.bfloat16) if args.bf16 else nullcontext()
+    dtype_map = {"fp32": None, "fp16": torch.float16, "bf16": torch.bfloat16}
+    amp_dtype = dtype_map[args.param_dtype]
+    amp_ctx = torch.autocast(device.type, dtype=amp_dtype) if amp_dtype else nullcontext()
 
     # Warmup pass (compiles HIP kernels on first run)
     with torch.no_grad(), amp_ctx:

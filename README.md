@@ -11,10 +11,10 @@ with ROCm 7.2 on Ubuntu 24.04.
 
 | Mode | Latency | Frame pairs/sec |
 |------|---------|-----------------|
-| `--no-compile --no-bf16` | 67 ms | ~14.8 |
-| `--no-compile` (bf16 only) | 69 ms | ~14.4 |
-| `--no-bf16` (compile only) | 53 ms | ~18.7 |
-| Default (compile + bf16) | 50 ms | ~20.0 (1.35x) |
+| `--compile False --param_dtype fp32` | 67 ms | ~14.8 |
+| `--compile False --param_dtype bf16` | 69 ms | ~14.4 |
+| `--compile True --param_dtype fp32` | 53 ms | ~18.7 |
+| Default (`--compile True --param_dtype bf16`) | 50 ms | ~20.0 (1.35x) |
 
 ## Setup
 
@@ -43,8 +43,8 @@ python infer_optical_flow.py --video input.mp4
 | `--frame` | `0` | 0-based index of the first frame; second frame is `frame + 1` |
 | `--output` | `flow_output.png` | Path for the saved composite image |
 | `--resize` | auto | Explicit `HxW` (e.g. `520x960`); if omitted, dims are rounded down to a multiple of 8 |
-| `--compile / --no-compile` | on | `torch.compile` for faster inference (slower first run) |
-| `--bf16 / --no-bf16` | on | bfloat16 mixed precision for reduced memory bandwidth |
+| `--compile` | `True` | `torch.compile` for faster inference (set `False` to disable) |
+| `--param_dtype` | `bf16` | Inference precision: `fp32`, `fp16`, or `bf16` |
 
 ### Example output
 
