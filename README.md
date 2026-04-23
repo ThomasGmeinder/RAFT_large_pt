@@ -23,17 +23,21 @@ The script patches the RAFT correlation block to force `grid_sample` and the
 correlation pyramid into the target dtype, which is where the real speedup
 comes from.
 
-**fp16 accuracy** -- measured as end-point error (EPE) vs the fp32 baseline:
+**Precision accuracy** -- end-point error (EPE) vs the fp32 baseline:
 
-| Metric | Value |
-|--------|-------|
-| Mean EPE | 0.005 pixels |
-| 95th percentile EPE | 0.014 pixels |
-| Max EPE | 0.063 pixels |
-| Pixels with EPE < 0.1 px | 100% |
+| Metric | fp16 | bf16 |
+|--------|------|------|
+| Mean EPE | 0.019 px | 0.272 px |
+| Median EPE | 0.016 px | 0.252 px |
+| 95th percentile EPE | 0.039 px | 0.507 px |
+| Max EPE | 0.102 px | 0.967 px |
+| Pixels with EPE < 0.1 px | 99.98% | 5.24% |
 
-The fp16 rounding error is ~360x smaller than the model's own prediction error
-on standard benchmarks (1.8-3.1 EPE). The quality loss is negligible.
+fp16 is nearly lossless -- its mean error is ~100x smaller than the model's own
+prediction error on standard benchmarks (1.8-3.1 EPE). bf16 is 14x worse than
+fp16 because its 7-bit mantissa (vs fp16's 10-bit) cannot represent the small
+coordinate deltas that accumulate across RAFT's 12-iteration GRU loop. fp16 is
+the better choice for RAFT: both faster (34 ms vs 51 ms) and far more accurate.
 
 ## Setup
 
