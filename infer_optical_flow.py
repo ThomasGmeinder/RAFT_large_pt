@@ -174,35 +174,64 @@ def preprocess(
     return transforms(img1, img2)
 
 
-def build_composite_2(
-    frame: torch.Tensor,
-    flow_rgb: torch.Tensor,
+def _tensor_to_uint8(t: torch.Tensor) -> np.ndarray:
+    """CHW tensor (float [-1,1] or uint8) -> HWC uint8 numpy array."""
+    t = t.cpu()
+    if t.is_floating_point():
+        t = ((t + 1.0) / 2.0).clamp(0, 1)
+        t = (t * 255).to(torch.uint8)
+    return t.permute(1, 2, 0).numpy()
+
+
+def draw_flow_vectors(
+    flow: torch.Tensor, bg: np.ndarray, step: int = 16
 ) -> np.ndarray:
-    """Create a side-by-side [frame | flow] composite as an HWC uint8 array."""
-    panels = []
-    for t in (frame, flow_rgb):
-        t = t.cpu()
-        if t.is_floating_point():
-            t = ((t + 1.0) / 2.0).clamp(0, 1)
-            t = (t * 255).to(torch.uint8)
-        panels.append(t.permute(1, 2, 0).numpy())
-    return np.concatenate(panels, axis=1)
+    """Draw a quiver-style vector field on top of *bg* (HWC uint8 RGB).
+
+    *flow* is (2, H, W) with horizontal/vertical displacement in pixels.
+    Arrows are drawn on a sub-sampled grid with *step*-pixel spacing.
+    """
+    flow_np = flow.cpu().float().numpy()
+    h, w = flow_np.shape[1], flow_np.shape[2]
+    canvas = bg.copy()
+
+    ys = np.arange(step // 2, h, step)
+    xs = np.arange(step // 2, w, step)
+
+    mag = np.sqrt(flow_np[0] ** 2 + flow_np[1] ** 2)
+    max_mag = mag.max() + 1e-6
+
+    for y in ys:
+        for x in xs:
+            dx = float(flow_np[0, y, x])
+            dy = float(flow_np[1, y, x])
+            m = float(mag[y, x])
+            length = m / max_mag
+            r = int(255 * min(length * 3, 1.0))
+            g = int(255 * min(length * 1.5, 1.0))
+            color = (r, g, 50)
+            scale = step * 1.5
+            x2 = int(x + dx / max_mag * scale)
+            y2 = int(y + dy / max_mag * scale)
+            cv2.arrowedLine(canvas, (x, y), (x2, y2), color, 1, tipLength=0.3)
+
+    return canvas
 
 
-def build_composite_3(
+def build_composite_4(
     frame1: torch.Tensor,
     frame2: torch.Tensor,
     flow_rgb: torch.Tensor,
+    flow: torch.Tensor,
 ) -> np.ndarray:
-    """Create a side-by-side [frame1 | frame2 | flow] composite as an HWC uint8 array."""
-    panels = []
-    for t in (frame1, frame2, flow_rgb):
-        t = t.cpu()
-        if t.is_floating_point():
-            t = ((t + 1.0) / 2.0).clamp(0, 1)
-            t = (t * 255).to(torch.uint8)
-        panels.append(t.permute(1, 2, 0).numpy())
-    return np.concatenate(panels, axis=1)
+    """2x2 grid: [frame1 | frame2] / [flow color | flow vectors]."""
+    f1 = _tensor_to_uint8(frame1)
+    f2 = _tensor_to_uint8(frame2)
+    fc = _tensor_to_uint8(flow_rgb)
+    fv = draw_flow_vectors(flow, f1.copy())
+    top = np.concatenate([f1, f2], axis=1)
+    bot = np.concatenate([fc, fv], axis=1)
+    return np.concatenate([top, bot], axis=0)
 
 
 def setup_model(args: argparse.Namespace):
@@ -278,7 +307,7 @@ def run_single_pair(args: argparse.Namespace) -> None:
     img1_vis = F.resize(img1_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
     img2_vis = F.resize(img2_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
 
-    composite = build_composite_3(img1_vis, img2_vis, flow_rgb)
+    composite = build_composite_4(img1_vis, img2_vis, flow_rgb, flow.cpu())
     composite_bgr = cv2.cvtColor(composite, cv2.COLOR_RGB2BGR)
 
     out_path = Path(args.output)
@@ -361,7 +390,7 @@ def run_realtime(args: argparse.Namespace) -> None:
         output_params=["-crf", "18", "-pix_fmt", "yuv420p"],
     )
 
-    print(f"Output : {out_path}  ({out_w * 2}x{out_h}, {out_fps:.1f} fps, H.264)")
+    print(f"Output : {out_path}  ({out_w * 2}x{out_h * 2}, {out_fps:.1f} fps, H.264)")
 
     # Reset to frame 0
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -397,10 +426,12 @@ def run_realtime(args: argparse.Namespace) -> None:
         elapsed_total += time.perf_counter() - t0
 
         flow = list_of_flows[-1][0]
-        flow_rgb = flow_to_image(flow.cpu())
+        flow_cpu = flow.cpu()
+        flow_rgb = flow_to_image(flow_cpu)
 
-        frame_vis = F.resize(t1_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
-        composite = build_composite_2(frame_vis, flow_rgb)
+        f1_vis = F.resize(t1_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
+        f2_vis = F.resize(t2_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
+        composite = build_composite_4(f1_vis, f2_vis, flow_rgb, flow_cpu)
         writer.append_data(composite)
 
         pair_idx += 1
