@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="RAFT Large optical-flow inference (PyTorch / ROCm)"
     )
-    p.add_argument("--video", required=True, help="Path to input video file")
+    p.add_argument("--video", default="Geisskopf_Gap_Jump.MOV", help="Path to input video file")
     p.add_argument(
         "--frame",
         type=int,
@@ -184,12 +184,15 @@ def _tensor_to_uint8(t: torch.Tensor) -> np.ndarray:
 
 
 def draw_flow_vectors(
-    flow: torch.Tensor, bg: np.ndarray, step: int = 16
+    flow: torch.Tensor, bg: np.ndarray, step: int = 16, scale: float = 5.0
 ) -> np.ndarray:
-    """Draw a quiver-style vector field on top of *bg* (HWC uint8 RGB).
+    """Draw actual predicted flow vectors on top of *bg* (HWC uint8 RGB).
 
     *flow* is (2, H, W) with horizontal/vertical displacement in pixels.
     Arrows are drawn on a sub-sampled grid with *step*-pixel spacing.
+    *scale* amplifies the vectors for visibility (1.0 = 1 pixel of flow
+    draws 1 pixel of arrow length).  Vectors shorter than 2 pixels on
+    screen are drawn as dots.
     """
     flow_np = flow.cpu().float().numpy()
     h, w = flow_np.shape[1], flow_np.shape[2]
@@ -198,22 +201,21 @@ def draw_flow_vectors(
     ys = np.arange(step // 2, h, step)
     xs = np.arange(step // 2, w, step)
 
-    mag = np.sqrt(flow_np[0] ** 2 + flow_np[1] ** 2)
-    max_mag = mag.max() + 1e-6
-
     for y in ys:
         for x in xs:
-            dx = float(flow_np[0, y, x])
-            dy = float(flow_np[1, y, x])
-            m = float(mag[y, x])
-            length = m / max_mag
-            r = int(255 * min(length * 3, 1.0))
-            g = int(255 * min(length * 1.5, 1.0))
-            color = (r, g, 50)
-            scale = step * 1.5
-            x2 = int(x + dx / max_mag * scale)
-            y2 = int(y + dy / max_mag * scale)
-            cv2.arrowedLine(canvas, (x, y), (x2, y2), color, 1, tipLength=0.3)
+            dx = float(flow_np[0, y, x]) * scale
+            dy = float(flow_np[1, y, x]) * scale
+            arrow_len = np.sqrt(dx * dx + dy * dy)
+
+            if arrow_len < 2.0:
+                cv2.circle(canvas, (x, y), 1, (100, 100, 100), -1)
+            else:
+                brightness = min(arrow_len / (step * 0.8), 1.0)
+                r = int(255 * brightness)
+                g = int(200 * brightness)
+                x2 = int(x + dx)
+                y2 = int(y + dy)
+                cv2.arrowedLine(canvas, (x, y), (x2, y2), (r, g, 50), 1, tipLength=0.3)
 
     return canvas
 
@@ -454,7 +456,7 @@ def main() -> None:
     args = parse_args()
 
     if args.output is None:
-        args.output = "flow_output.mp4" if args.realtime else "flow_output.png"
+        args.output = "optical_flow_vectors_video.mp4" if args.realtime else "flow_output.png"
     elif args.realtime and args.output.endswith(".png"):
         args.output = args.output.rsplit(".", 1)[0] + ".mp4"
 

@@ -106,8 +106,13 @@ python infer_optical_flow.py --video input.mp4
 
 ### Full-video mode (`--realtime`)
 
-Processes all consecutive frame pairs and writes a side-by-side H.264 MP4:
-**original frame (left) | flow visualization (right)**.
+Processes all consecutive frame pairs and writes a 2x2 H.264 MP4:
+
+![Sample output frame](docs/sample_output.png)
+
+| Top-left | Top-right | Bottom-left | Bottom-right |
+|----------|-----------|-------------|--------------|
+| Frame N | Frame N+1 | Flow color wheel | Vector field overlay |
 
 The output video is encoded at the measured inference throughput so it plays
 back in real time (1 second of video = 1 second of processing).
