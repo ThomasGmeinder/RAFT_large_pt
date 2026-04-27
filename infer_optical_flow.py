@@ -85,8 +85,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--resize",
-        default=None,
-        help="Explicit HxW to resize frames to, e.g. 520x960",
+        default="376x672",
+        help="HxW to resize frames to (default: 376x672). Use 'none' for native resolution",
     )
     p.add_argument(
         "--compile",
@@ -149,7 +149,8 @@ def round_down_to_multiple(value: int, multiple: int) -> int:
 def compute_resize_hw(
     h: int, w: int, resize_arg: str | None
 ) -> tuple[int, int] | None:
-    if resize_arg is not None:
+    """Return (H, W) to resize to, or None if no resize is needed."""
+    if resize_arg is not None and resize_arg.lower() not in ("none", ""):
         parts = resize_arg.split("x")
         return (int(parts[0]), int(parts[1]))
     h2 = max(round_down_to_multiple(h, 8), 128)
@@ -276,6 +277,8 @@ def run_single_pair(args: argparse.Namespace) -> None:
     img2 = to_tensor(rgb2)
 
     resize_hw = compute_resize_hw(h_orig, w_orig, args.resize)
+    if resize_hw and (resize_hw[0] != h_orig or resize_hw[1] != w_orig):
+        print(f"Resize : {w_orig}x{h_orig} -> {resize_hw[1]}x{resize_hw[0]}  (use --resize none for native resolution)")
     img1_p, img2_p = preprocess(img1, img2, transforms, resize_hw)
 
     if img1_p.dim() == 3:
@@ -338,6 +341,8 @@ def run_realtime(args: argparse.Namespace) -> None:
         out_h, out_w = resize_hw
     else:
         out_h, out_w = h_orig, w_orig
+    if resize_hw and (resize_hw[0] != h_orig or resize_hw[1] != w_orig):
+        print(f"Resize : {w_orig}x{h_orig} -> {out_w}x{out_h}  (use --resize none for native resolution)")
 
     out_path = Path(args.output)
 
@@ -381,9 +386,10 @@ def run_realtime(args: argparse.Namespace) -> None:
             _ = model(t1_d, t2_d)
     torch.cuda.synchronize() if device.type == "cuda" else None
     cal_ms = (time.perf_counter() - t_cal_start) / n_cal * 1000
-    out_fps = 1000.0 / cal_ms
+    throughput_fps = 1000.0 / cal_ms
 
-    print(f"Throughput: {cal_ms:.1f} ms/pair -> output video at {out_fps:.1f} fps")
+    out_fps = min(fps, throughput_fps)
+    print(f"Throughput: {cal_ms:.1f} ms/pair ({throughput_fps:.1f} fps), input: {fps:.1f} fps -> output: {out_fps:.1f} fps")
 
     import imageio
     writer = imageio.get_writer(
