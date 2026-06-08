@@ -118,17 +118,24 @@ The output video is encoded at the measured inference throughput so it plays
 back in real time (1 second of video = 1 second of processing).
 
 ```bash
-python infer_optical_flow.py --video input.mp4 --realtime --output flow_video.mp4
+python infer_optical_flow.py --video Geisskopf_Gap_Jump.mp4 --output optical_flow_vectors_video.mp4
 ```
 
 ```
 Device : AMD Radeon Graphics  (ROCm/HIP)
-Model  : RAFT Large  (5,257,536 params, compiled, fp16)
-Video  : input.mp4  (672x376, 1782 frames, 92.2 fps)
-Throughput: 33.5 ms/pair -> output video at 29.9 fps
-Processing 1781 frame pairs ...
-Done   : 1781 pairs, avg 36.8 ms/pair (27.2 pairs/sec)
-Saved  : /path/to/flow_video.mp4
+Model  : RAFT Large  (5,257,536 params, compiled(reduce-overhead), fp16)
+Video  : Geisskopf_Gap_Jump.mp4  (1280x720, 192 frames, 30.0 fps)
+Frames : 0 .. 191
+Resize : 1280x720 -> 672x376
+Input  : torch.Size([1, 3, 376, 672])  dtype=torch.float32
+Warmup ...
+Calibration: 27.9 ms/pair (35.9 fps) -> output 30.0 fps
+Output : optical_flow_vectors_video.mp4  (1344x752, 30.0 fps, H.264/VAAPI)
+Processing 191 image pairs ...
+    100/191  avg=30.0 ms/pair  ETA=3s
+    191/191  avg=30.1 ms/pair  ETA=0s
+Summary: 191 pairs  total=8.4s  avg=30.1 ms/pair  FPS=33.3
+Saved  : optical_flow_vectors_video.mp4
 ```
 
 **Reading the flow visualization:** the right panel uses the standard optical
