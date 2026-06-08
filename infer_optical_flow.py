@@ -447,7 +447,7 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
               f"mag min={magnitude.min():.3f}  max={magnitude.max():.3f}  mean={magnitude.mean():.3f}")
         cv2.imwrite(str(out_path), cv2.cvtColor(composite, cv2.COLOR_RGB2BGR))
 
-    print(f"Saved  : {out_path.resolve()}")
+    print(f"Saved  : {out_path}")
 
 
 def main() -> None:
