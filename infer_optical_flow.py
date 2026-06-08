@@ -11,11 +11,15 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+
+import shutil
+import subprocess
 
 import cv2
 import numpy as np
@@ -114,6 +118,13 @@ def parse_args() -> argparse.Namespace:
         choices=["fp32", "fp16", "bf16"],
         default="fp16",
         help="Inference precision: fp32, fp16, or bf16 (default: fp16)",
+    )
+    p.add_argument(
+        "--vaapi",
+        type=lambda v: v.lower() not in ("0", "false", "no", "off"),
+        default=True,
+        metavar="BOOL",
+        help="Use VAAPI hardware H.264 encoder if available (default: True)",
     )
     return p.parse_args()
 
@@ -229,6 +240,40 @@ def build_composite_4(
     return np.concatenate([top, bot], axis=0)
 
 
+class VaapiWriter:
+    """Pipe RGB frames to ffmpeg using AMD VAAPI hardware H.264 encoding.
+
+    Offloads encoding to the VCN hardware block, freeing the CPU and reducing
+    DRAM pressure between GPU inference calls on the iGPU.
+    """
+
+    VAAPI_DEVICE = "/dev/dri/renderD128"
+
+    def __init__(self, path: str, fps: float, width: int, height: int):
+        cmd = [
+            "ffmpeg", "-y",
+            "-vaapi_device", self.VAAPI_DEVICE,
+            "-f", "rawvideo", "-pix_fmt", "rgb24",
+            "-s", f"{width}x{height}", "-r", str(fps),
+            "-i", "pipe:0",
+            "-vf", "format=nv12,hwupload",
+            "-c:v", "h264_vaapi", "-qp", "18",
+            path,
+        ]
+        self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def append_data(self, frame: np.ndarray) -> None:
+        self._proc.stdin.write(frame.tobytes())
+
+    def close(self) -> None:
+        self._proc.stdin.close()
+        self._proc.wait()
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return shutil.which("ffmpeg") is not None and os.path.exists(cls.VAAPI_DEVICE)
+
+
 def setup_model(args: argparse.Namespace):
     """Shared setup: device, precision, model, transforms, autocast context."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -298,41 +343,51 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
     t2_warm = preprocess_one(to_tensor(cv2.cvtColor(bgr2, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
 
     print(f"Input  : {t1_warm.shape}  dtype={t1_warm.dtype}")
-    print("Warmup ...")
 
-    # Warmup: 3 passes to let ROCm HSA kernel cache settle
-    t1_d, t2_d = t1_warm.to(device), t2_warm.to(device)
+    # Pre-allocate fixed-address GPU input buffers used by warmup, calibration,
+    # AND the main loop — consistent pointers let reduce-overhead CUDA graphs
+    # replay without extra input copies on every call.
+    t1_buf = t1_warm.to(device)
+    t2_buf = t2_warm.to(device)
+
+    print("Warmup ...")
     for _ in range(3):
         with torch.no_grad(), amp_ctx:
-            _ = model(t1_d, t2_d)
+            _ = model(t1_buf, t2_buf)
     torch.cuda.synchronize() if device.type == "cuda" else None
 
     if whole_video:
-        # Calibrate with H2D to match real-loop conditions
+        # Calibrate using the same fixed buffers as the main loop
         n_cal = min(10, total_pairs)
         torch.cuda.synchronize() if device.type == "cuda" else None
         t_cal = time.perf_counter()
         for _ in range(n_cal):
             with torch.no_grad(), amp_ctx:
-                _ = model(t1_warm.to(device), t2_warm.to(device))
+                _ = model(t1_buf, t2_buf)
         torch.cuda.synchronize() if device.type == "cuda" else None
         cal_ms = (time.perf_counter() - t_cal) / n_cal * 1000
         out_fps = min(src_fps, 1000.0 / cal_ms)
         print(f"Calibration: {cal_ms:.1f} ms/pair ({1000.0/cal_ms:.1f} fps) -> output {out_fps:.1f} fps")
 
-        import imageio
-        writer = imageio.get_writer(
-            str(out_path), fps=out_fps, codec="libx264",
-            quality=None, macro_block_size=1,
-            output_params=["-crf", "18", "-pix_fmt", "yuv420p"],
-        )
-        print(f"Output : {out_path}  ({out_w * 2}x{out_h * 2}, {out_fps:.1f} fps, H.264)")
+        composite_w, composite_h = out_w * 2, out_h * 2
+        use_vaapi = args.vaapi and VaapiWriter.is_available()
+        if use_vaapi:
+            writer = VaapiWriter(str(out_path), out_fps, composite_w, composite_h)
+            print(f"Output : {out_path}  ({composite_w}x{composite_h}, {out_fps:.1f} fps, H.264/VAAPI)")
+        else:
+            import imageio
+            writer = imageio.get_writer(
+                str(out_path), fps=out_fps, codec="libx264",
+                quality=None, macro_block_size=1,
+                output_params=["-crf", "18", "-pix_fmt", "yuv420p"],
+            )
+            print(f"Output : {out_path}  ({composite_w}x{composite_h}, {out_fps:.1f} fps, H.264/libx264)")
 
-    # Reset to start; preprocess first frame once — upload to device and keep there
+    # Reset to start; preprocess first frame and load into t1_buf (fixed GPU address)
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     ok, bgr_prev = cap.read()
     t1_p = preprocess_one(to_tensor(cv2.cvtColor(bgr_prev, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
-    t1_d = t1_p.to(device)  # stays on GPU; swapped with t2_d each iteration
+    t1_buf.copy_(t1_p)  # load into pre-allocated buffer — same GPU address as warmup
 
     elapsed_total = 0.0
     pair_idx = 0
@@ -345,15 +400,15 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
         if not ok:
             break
 
-        # Preprocess only the new frame; t1_p cached from previous t2_p (CPU side for composite)
+        # Preprocess only the new frame; t1_p cached from previous iteration (CPU side for composite)
         t2_p = preprocess_one(to_tensor(cv2.cvtColor(bgr_next, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
-        t2_d = t2_p.to(device)  # H2D for new frame only; t1_d already on device
+        t2_buf.copy_(t2_p)  # load into fixed buffer — CUDA graph sees consistent pointers
 
         torch.cuda.synchronize() if device.type == "cuda" else None
         t0 = time.perf_counter()
 
         with torch.no_grad(), amp_ctx:
-            list_of_flows = model(t1_d, t2_d)
+            list_of_flows = model(t1_buf, t2_buf)
 
         torch.cuda.synchronize() if device.type == "cuda" else None
         result = FlowResult(flow=list_of_flows[-1][0].cpu(), elapsed_s=time.perf_counter() - t0)
@@ -367,7 +422,7 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
         if whole_video:
             writer.append_data(composite)
 
-        t1_d = t2_d  # swap: next iteration's frame1 stays on GPU — no re-upload
+        t1_buf, t2_buf = t2_buf, t1_buf  # swap fixed buffers — t1 stays on GPU, no re-upload
         t1_p = t2_p  # keep CPU copy in sync for composite building
         pair_idx += 1
 
