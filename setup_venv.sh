@@ -5,12 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 WHEEL_DIR="${SCRIPT_DIR}/.wheels"
 
-TRITON_WHL="triton-3.5.1%2Brocm7.2.1.gita272dfa8-cp312-cp312-linux_x86_64.whl"
-TORCH_WHL="torch-2.9.1%2Brocm7.2.1.lw.gitff65f5bc-cp312-cp312-linux_x86_64.whl"
-VISION_WHL="torchvision-0.24.0%2Brocm7.2.1.gitb919bd0c-cp312-cp312-linux_x86_64.whl"
-BASE_URL="https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1"
+TRITON_WHL="triton-3.5.1%2Brocm7.2.4.gita272dfa8-cp312-cp312-linux_x86_64.whl"
+TORCH_WHL="torch-2.9.1%2Brocm7.2.4.lw.git39497456-cp312-cp312-linux_x86_64.whl"
+VISION_WHL="torchvision-0.24.0%2Brocm7.2.4.gitb919bd0c-cp312-cp312-linux_x86_64.whl"
+BASE_URL="https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.4"
 
-echo "=== RAFT Large — ROCm 7.2.1 environment setup ==="
+echo "=== RAFT Large — ROCm 7.2.4 environment setup ==="
 
 # --- virtual environment ---
 if [ -d "${VENV_DIR}" ]; then
