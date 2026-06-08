@@ -14,6 +14,7 @@ import argparse
 import sys
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -24,6 +25,12 @@ from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
 from torchvision.models.optical_flow._utils import grid_sample as _grid_sample
 from torchvision.models.optical_flow.raft import CorrBlock
 from torchvision.utils import flow_to_image
+
+
+@dataclass
+class FlowResult:
+    flow: torch.Tensor  # (2, H, W) CPU tensor — raw vector field from inference
+    elapsed_s: float    # forward-pass wall time in seconds
 
 
 def _patch_corr_block_dtype(dtype: torch.dtype) -> None:
@@ -105,34 +112,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def extract_frames(
-    video_path: str, frame_idx: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Read two consecutive RGB frames from *video_path* starting at *frame_idx*."""
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        sys.exit(f"ERROR: cannot open video '{video_path}'")
-
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if frame_idx + 1 >= total:
-        cap.release()
-        sys.exit(
-            f"ERROR: frame {frame_idx}+1 out of range (video has {total} frames)"
-        )
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ok1, bgr1 = cap.read()
-    ok2, bgr2 = cap.read()
-    cap.release()
-
-    if not ok1 or not ok2:
-        sys.exit(f"ERROR: failed to read frames {frame_idx} and {frame_idx + 1}")
-
-    rgb1 = cv2.cvtColor(bgr1, cv2.COLOR_BGR2RGB)
-    rgb2 = cv2.cvtColor(bgr2, cv2.COLOR_BGR2RGB)
-    return rgb1, rgb2
-
-
 def to_tensor(img: np.ndarray) -> torch.Tensor:
     """HWC uint8 ndarray -> CHW uint8 tensor."""
     return torch.from_numpy(img).permute(2, 0, 1)
@@ -156,19 +135,21 @@ def compute_resize_hw(
     return (h2, w2)
 
 
-def preprocess(
-    img1: torch.Tensor,
-    img2: torch.Tensor,
+def preprocess_one(
+    img: torch.Tensor,
     transforms,
-    resize_hw: tuple[int, int] | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Resize so dimensions are divisible by 8, then apply model transforms."""
-    if resize_hw is not None:
-        h, w = resize_hw
-        img1 = F.resize(img1, [h, w], antialias=False)
-        img2 = F.resize(img2, [h, w], antialias=False)
+    resize_hw: tuple[int, int] | None,
+) -> torch.Tensor:
+    """Resize + normalize a single frame. Returns (3, H, W) float tensor.
 
-    return transforms(img1, img2)
+    Calling transforms(img, img) and discarding the duplicate output is safe
+    because RAFT transforms apply the same normalization to each image
+    independently.
+    """
+    if resize_hw is not None:
+        img = F.resize(img, list(resize_hw), antialias=False)
+    out, _ = transforms(img, img)
+    return out
 
 
 def _tensor_to_uint8(t: torch.Tensor) -> np.ndarray:
@@ -198,21 +179,30 @@ def draw_flow_vectors(
     ys = np.arange(step // 2, h, step)
     xs = np.arange(step // 2, w, step)
 
-    for y in ys:
-        for x in xs:
-            dx = float(flow_np[0, y, x]) * scale
-            dy = float(flow_np[1, y, x]) * scale
-            arrow_len = np.sqrt(dx * dx + dy * dy)
+    yy, xx = np.meshgrid(ys, xs, indexing="ij")  # (ny, nx) grid coordinates
 
-            if arrow_len < 2.0:
-                cv2.circle(canvas, (x, y), 1, (100, 100, 100), -1)
-            else:
-                brightness = min(arrow_len / (step * 0.8), 1.0)
-                r = int(255 * brightness)
-                g = int(200 * brightness)
-                x2 = int(x + dx)
-                y2 = int(y + dy)
-                cv2.arrowedLine(canvas, (x, y), (x2, y2), (r, g, 50), 1, tipLength=0.3)
+    # All flow values and magnitudes in one numpy pass
+    gx = flow_np[0][np.ix_(ys, xs)] * scale   # (ny, nx)
+    gy = flow_np[1][np.ix_(ys, xs)] * scale
+    lengths = np.hypot(gx, gy)
+    threshold = step * 0.8
+
+    # Dots: single bulk numpy write — no Python loop
+    dot = lengths < 2.0
+    canvas[yy[dot], xx[dot]] = (100, 100, 100)
+
+    # Arrows: pre-compute all parameters as flat Python lists, then tight cv2 loop
+    amask = ~dot
+    if amask.any():
+        brightness = np.clip(lengths[amask] / threshold, 0.0, 1.0)
+        x0s = xx[amask].tolist()
+        y0s = yy[amask].tolist()
+        x1s = (xx[amask] + gx[amask]).astype(int).tolist()
+        y1s = (yy[amask] + gy[amask]).astype(int).tolist()
+        rs  = (255 * brightness).astype(np.uint8).tolist()
+        gs  = (200 * brightness).astype(np.uint8).tolist()
+        for x0, y0, x1, y1, r, g in zip(x0s, y0s, x1s, y1s, rs, gs):
+            cv2.arrowedLine(canvas, (x0, y0), (x1, y1), (r, g, 50), 1, tipLength=0.3)
 
     return canvas
 
@@ -260,166 +250,96 @@ def setup_model(args: argparse.Namespace):
     return device, model, transforms, amp_ctx
 
 
-def run_single_pair(args: argparse.Namespace) -> None:
-    """Original single-frame-pair mode."""
+def run(args: argparse.Namespace, whole_video: bool) -> None:
+    """Unified inference loop for single-pair (PNG) and whole-video (MP4) modes."""
     device, model, transforms, amp_ctx = setup_model(args)
-
-    rgb1, rgb2 = extract_frames(args.video, args.frame)
-    h_orig, w_orig = rgb1.shape[:2]
-    print(f"Video  : {args.video}  ({w_orig}x{h_orig})")
-    print(f"Frames : {args.frame} and {args.frame + 1}")
-
-    img1 = to_tensor(rgb1)
-    img2 = to_tensor(rgb2)
-
-    resize_hw = compute_resize_hw(h_orig, w_orig, args.resize)
-    if resize_hw and (resize_hw[0] != h_orig or resize_hw[1] != w_orig):
-        print(f"Resize : {w_orig}x{h_orig} -> {resize_hw[1]}x{resize_hw[0]}  (use --resize none for native resolution)")
-    img1_p, img2_p = preprocess(img1, img2, transforms, resize_hw)
-
-    if img1_p.dim() == 3:
-        img1_p = img1_p.unsqueeze(0)
-        img2_p = img2_p.unsqueeze(0)
-
-    print(f"Input  : {img1_p.shape}  dtype={img1_p.dtype}  range=[{img1_p.min():.2f}, {img1_p.max():.2f}]")
-
-    img1_d = img1_p.to(device)
-    img2_d = img2_p.to(device)
-
-    with torch.no_grad(), amp_ctx:
-        _ = model(img1_d, img2_d)
-
-    torch.cuda.synchronize() if device.type == "cuda" else None
-    t0 = time.perf_counter()
-
-    with torch.no_grad(), amp_ctx:
-        list_of_flows = model(img1_d, img2_d)
-
-    torch.cuda.synchronize() if device.type == "cuda" else None
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-    flow = list_of_flows[-1][0]
-    magnitude = flow.norm(dim=0)
-    print(f"Summary: 1 double-frame processed  time={elapsed_ms:.1f} ms  FPS={1000.0/elapsed_ms:.1f}  (excluding warmup)")
-    print(f"Flow   : shape={tuple(flow.shape)}  "
-          f"mag min={magnitude.min():.3f}  max={magnitude.max():.3f}  mean={magnitude.mean():.3f}")
-
-    flow_rgb = flow_to_image(flow.cpu())
-    img1_vis = F.resize(img1_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
-    img2_vis = F.resize(img2_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
-
-    composite = build_composite_4(img1_vis, img2_vis, flow_rgb, flow.cpu())
-    composite_bgr = cv2.cvtColor(composite, cv2.COLOR_RGB2BGR)
-
     out_path = Path(args.output)
-    cv2.imwrite(str(out_path), composite_bgr)
-    print(f"Saved  : {out_path.resolve()}  ({composite.shape[1]}x{composite.shape[0]})")
-
-
-def run_realtime(args: argparse.Namespace) -> None:
-    """Process every consecutive frame pair and write a side-by-side MP4."""
-    device, model, transforms, amp_ctx = setup_model(args)
 
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
         sys.exit(f"ERROR: cannot open video '{args.video}'")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    src_fps = cap.get(cv2.CAP_PROP_FPS)
     w_orig = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h_orig = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_pairs = total_frames - 1
 
-    print(f"Video  : {args.video}  ({w_orig}x{h_orig}, {total_frames} frames, {fps:.1f} fps)")
+    start_frame = 0 if whole_video else args.frame
+    if start_frame + 1 >= total_frames:
+        cap.release()
+        sys.exit(f"ERROR: frame {start_frame}+1 out of range ({total_frames} frames)")
 
+    total_pairs = (total_frames - 1 - start_frame) if whole_video else 1
     resize_hw = compute_resize_hw(h_orig, w_orig, args.resize)
-    if resize_hw:
-        out_h, out_w = resize_hw
+    out_h, out_w = resize_hw if resize_hw else (h_orig, w_orig)
+
+    print(f"Video  : {args.video}  ({w_orig}x{h_orig}, {total_frames} frames, {src_fps:.1f} fps)")
+    if whole_video:
+        print(f"Frames : 0 .. {total_frames - 1}")
     else:
-        out_h, out_w = h_orig, w_orig
-    if resize_hw and (resize_hw[0] != h_orig or resize_hw[1] != w_orig):
-        print(f"Resize : {w_orig}x{h_orig} -> {out_w}x{out_h}  (use --resize none for native resolution)")
+        print(f"Frames : {start_frame} and {start_frame + 1}")
+    if resize_hw:
+        print(f"Resize : {w_orig}x{h_orig} -> {out_w}x{out_h}")
 
-    out_path = Path(args.output)
-
-    ok, bgr_prev = cap.read()
-    if not ok:
+    # Read first two frames for warmup (do not count toward inference)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    ok, bgr1 = cap.read()
+    ok2, bgr2 = cap.read()
+    if not ok or not ok2:
         cap.release()
-        sys.exit("ERROR: cannot read first frame")
-    rgb_prev = cv2.cvtColor(bgr_prev, cv2.COLOR_BGR2RGB)
+        sys.exit("ERROR: cannot read warmup frames")
+    t1_warm = preprocess_one(to_tensor(cv2.cvtColor(bgr1, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
+    t2_warm = preprocess_one(to_tensor(cv2.cvtColor(bgr2, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
 
-    # Warmup with first two frames
-    ok, bgr_next = cap.read()
-    if not ok:
-        cap.release()
-        sys.exit("ERROR: video has fewer than 2 frames")
-    rgb_next = cv2.cvtColor(bgr_next, cv2.COLOR_BGR2RGB)
+    print(f"Input  : {t1_warm.shape}  dtype={t1_warm.dtype}")
+    print("Warmup ...")
 
-    t1 = to_tensor(rgb_prev)
-    t2 = to_tensor(rgb_next)
-    t1_p, t2_p = preprocess(t1, t2, transforms, resize_hw)
-    if t1_p.dim() == 3:
-        t1_p = t1_p.unsqueeze(0)
-        t2_p = t2_p.unsqueeze(0)
-
-    print(f"Input  : {t1_p.shape}  dtype={t1_p.dtype}")
-    print(f"Warmup + calibration ...")
-
-    t1_d = t1_p.to(device) if t1_p.dim() == 4 else t1_p.unsqueeze(0).to(device)
-    t2_d = t2_p.to(device) if t2_p.dim() == 4 else t2_p.unsqueeze(0).to(device)
-
-    # Warmup (first run triggers torch.compile)
-    with torch.no_grad(), amp_ctx:
-        _ = model(t1_d, t2_d)
-    torch.cuda.synchronize() if device.type == "cuda" else None
-
-    # Calibrate: measure 10 iterations to get stable throughput
-    n_cal = min(10, total_pairs)
-    torch.cuda.synchronize() if device.type == "cuda" else None
-    t_cal_start = time.perf_counter()
-    for _ in range(n_cal):
+    # Warmup: 3 passes to let ROCm HSA kernel cache settle
+    t1_d, t2_d = t1_warm.to(device), t2_warm.to(device)
+    for _ in range(3):
         with torch.no_grad(), amp_ctx:
             _ = model(t1_d, t2_d)
     torch.cuda.synchronize() if device.type == "cuda" else None
-    cal_ms = (time.perf_counter() - t_cal_start) / n_cal * 1000
-    throughput_fps = 1000.0 / cal_ms
 
-    out_fps = min(fps, throughput_fps)
-    print(f"Throughput: {cal_ms:.1f} ms/pair ({throughput_fps:.1f} fps), input: {fps:.1f} fps -> output: {out_fps:.1f} fps")
+    if whole_video:
+        # Calibrate with H2D to match real-loop conditions
+        n_cal = min(10, total_pairs)
+        torch.cuda.synchronize() if device.type == "cuda" else None
+        t_cal = time.perf_counter()
+        for _ in range(n_cal):
+            with torch.no_grad(), amp_ctx:
+                _ = model(t1_warm.to(device), t2_warm.to(device))
+        torch.cuda.synchronize() if device.type == "cuda" else None
+        cal_ms = (time.perf_counter() - t_cal) / n_cal * 1000
+        out_fps = min(src_fps, 1000.0 / cal_ms)
+        print(f"Calibration: {cal_ms:.1f} ms/pair ({1000.0/cal_ms:.1f} fps) -> output {out_fps:.1f} fps")
 
-    import imageio
-    writer = imageio.get_writer(
-        str(out_path), fps=out_fps, codec="libx264",
-        quality=None, macro_block_size=1,
-        output_params=["-crf", "18", "-pix_fmt", "yuv420p"],
-    )
+        import imageio
+        writer = imageio.get_writer(
+            str(out_path), fps=out_fps, codec="libx264",
+            quality=None, macro_block_size=1,
+            output_params=["-crf", "18", "-pix_fmt", "yuv420p"],
+        )
+        print(f"Output : {out_path}  ({out_w * 2}x{out_h * 2}, {out_fps:.1f} fps, H.264)")
 
-    print(f"Output : {out_path}  ({out_w * 2}x{out_h * 2}, {out_fps:.1f} fps, H.264)")
-
-    # Reset to frame 0
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    # Reset to start; preprocess first frame once — cached across iterations as t1_p
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     ok, bgr_prev = cap.read()
-    rgb_prev = cv2.cvtColor(bgr_prev, cv2.COLOR_BGR2RGB)
+    t1_p = preprocess_one(to_tensor(cv2.cvtColor(bgr_prev, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
 
     elapsed_total = 0.0
     pair_idx = 0
-    t_wall_start = time.perf_counter()
+    t_wall = time.perf_counter()
+    print(f"Processing {total_pairs} pair{'s' if total_pairs > 1 else ''} ...")
 
-    print(f"Processing {total_pairs} frame pairs ...")
-
-    while True:
+    composite = result = None  # satisfy reference-before-assignment for single-pair path
+    while pair_idx < total_pairs:
         ok, bgr_next = cap.read()
         if not ok:
             break
 
-        rgb_next = cv2.cvtColor(bgr_next, cv2.COLOR_BGR2RGB)
-
-        t1 = to_tensor(rgb_prev)
-        t2 = to_tensor(rgb_next)
-        t1_p, t2_p = preprocess(t1, t2, transforms, resize_hw)
-        if t1_p.dim() == 3:
-            t1_p = t1_p.unsqueeze(0)
-            t2_p = t2_p.unsqueeze(0)
+        # Preprocess only the new frame; t1_p comes from the previous iteration's t2_p
+        t2_p = preprocess_one(to_tensor(cv2.cvtColor(bgr_next, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
 
         torch.cuda.synchronize() if device.type == "cuda" else None
         t0 = time.perf_counter()
@@ -428,32 +348,41 @@ def run_realtime(args: argparse.Namespace) -> None:
             list_of_flows = model(t1_p.to(device), t2_p.to(device))
 
         torch.cuda.synchronize() if device.type == "cuda" else None
-        elapsed_total += time.perf_counter() - t0
+        result = FlowResult(flow=list_of_flows[-1][0].cpu(), elapsed_s=time.perf_counter() - t0)
+        elapsed_total += result.elapsed_s
 
-        flow = list_of_flows[-1][0]
-        flow_cpu = flow.cpu()
-        flow_rgb = flow_to_image(flow_cpu)
+        # Post-processing: t1_p[0] and t2_p[0] are already at the same spatial
+        # size as flow_rgb — no F.resize needed
+        flow_rgb = flow_to_image(result.flow)
+        composite = build_composite_4(t1_p[0], t2_p[0], flow_rgb, result.flow)
 
-        f1_vis = F.resize(t1_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
-        f2_vis = F.resize(t2_p[0].cpu(), list(flow_rgb.shape[1:]), antialias=False)
-        composite = build_composite_4(f1_vis, f2_vis, flow_rgb, flow_cpu)
-        writer.append_data(composite)
+        if whole_video:
+            writer.append_data(composite)
 
+        t1_p = t2_p  # cache: next iteration's frame1 is this iteration's frame2
         pair_idx += 1
-        if pair_idx % 100 == 0 or pair_idx == total_pairs:
-            avg_ms = (elapsed_total / pair_idx) * 1000
+
+        if whole_video and (pair_idx % 100 == 0 or pair_idx == total_pairs):
+            avg_ms = elapsed_total / pair_idx * 1000
             eta = (total_pairs - pair_idx) * avg_ms / 1000
             print(f"  {pair_idx:5d}/{total_pairs}  avg={avg_ms:.1f} ms/pair  ETA={eta:.0f}s")
 
-        rgb_prev = rgb_next
-
-    writer.close()
     cap.release()
 
-    wall_s = time.perf_counter() - t_wall_start
-    avg_ms = (elapsed_total / pair_idx) * 1000 if pair_idx > 0 else 0
-    fps = 1000.0 / avg_ms if avg_ms > 0 else 0
-    print(f"Summary: {pair_idx} double-frames processed  total={wall_s:.1f}s  avg={avg_ms:.1f} ms/pair  FPS={fps:.1f}")
+    avg_ms = elapsed_total / pair_idx * 1000 if pair_idx > 0 else 0
+    infer_fps = 1000.0 / avg_ms if avg_ms > 0 else 0
+
+    if whole_video:
+        writer.close()
+        wall_s = time.perf_counter() - t_wall
+        print(f"Summary: {pair_idx} pairs  total={wall_s:.1f}s  avg={avg_ms:.1f} ms/pair  FPS={infer_fps:.1f}")
+    else:
+        magnitude = result.flow.norm(dim=0)
+        print(f"Summary: 1 pair  time={avg_ms:.1f} ms  FPS={infer_fps:.1f}")
+        print(f"Flow   : shape={tuple(result.flow.shape)}  "
+              f"mag min={magnitude.min():.3f}  max={magnitude.max():.3f}  mean={magnitude.mean():.3f}")
+        cv2.imwrite(str(out_path), cv2.cvtColor(composite, cv2.COLOR_RGB2BGR))
+
     print(f"Saved  : {out_path.resolve()}")
 
 
@@ -475,10 +404,7 @@ def main() -> None:
         else:
             sys.exit(f"ERROR: unrecognized output extension '{ext}'. Use a video ({', '.join(sorted(_VIDEO_EXTS))}) or image ({', '.join(sorted(_IMAGE_EXTS))}) extension.")
 
-    if whole_video:
-        run_realtime(args)
-    else:
-        run_single_pair(args)
+    run(args, whole_video)
 
 
 if __name__ == "__main__":
