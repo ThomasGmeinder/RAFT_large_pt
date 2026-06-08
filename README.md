@@ -1,29 +1,34 @@
 # RAFT Large Optical Flow Inference (ROCm)
 
-Predict optical flow between two consecutive video frames using
+Predict optical flow between consecutive video frames using
 [RAFT Large](https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.optical_flow.raft_large.html)
 on an AMD GPU via PyTorch + ROCm.
 
 Tested on **AMD Ryzen AI MAX+ 395 / Radeon 8060S (Strix Halo, gfx1151)**
-with ROCm 7.2 on Ubuntu 24.04.
+with ROCm 7.2.1 on Ubuntu 24.04.
 
-**Performance** at 672x376 on the integrated GPU:
+**Performance** at 672×376 on the integrated GPU:
 
-| Mode | Latency | Frame pairs/sec |
-|------|---------|-----------------|
+| Configuration | Latency | FPS |
+|---------------|---------|-----|
 | `--compile False --param_dtype fp32` | 67 ms | ~14.8 |
-| `--compile True --param_dtype fp32` | 53 ms | ~18.7 (1.26x) |
-| `--compile True --param_dtype bf16` | 51 ms | ~19.6 (1.32x) |
-| compiled fp16 autocast only (no corr patch) | 50 ms | ~20.1 (1.34x) |
-| Default (`--compile True --param_dtype fp16`) | 34 ms | ~29.7 (1.97x) |
+| `--compile True --param_dtype fp32` | 53 ms | ~18.7 (1.26×) |
+| `--compile True --param_dtype bf16` | 51 ms | ~19.6 (1.32×) |
+| compiled fp16, no CorrBlock patch | 50 ms | ~20.1 (1.34×) |
+| `--compile True --param_dtype fp16` (`--compile-mode default`) | 34 ms | ~29.7 (1.97×) |
+| **Default** (`--compile-mode reduce-overhead --param_dtype fp16`) | **~30 ms** | **~33 (2.24×)** |
 
-fp16/bf16 with autocast alone barely helps because `grid_sample` -- called 48
-times per forward pass -- is not in autocast's promotion list and stays in fp32.
+`--compile-mode reduce-overhead` uses HIP graph capture to replay RAFT's
+12-iteration GRU loop with near-zero kernel launch overhead, adding ~3 FPS
+over the default compile mode.
+
+fp16/bf16 autocast alone barely helps because `grid_sample` — called 48
+times per forward pass — is not in autocast's promotion list and stays in fp32.
 The script patches the RAFT correlation block to force `grid_sample` and the
 correlation pyramid into the target dtype, which is where the real speedup
 comes from.
 
-**Precision accuracy** -- end-point error (EPE) vs the fp32 baseline:
+**Precision accuracy** — end-point error (EPE) vs the fp32 baseline:
 
 | Metric | fp16 | bf16 |
 |--------|------|------|
@@ -33,11 +38,11 @@ comes from.
 | Max EPE | 0.102 px | 0.967 px |
 | Pixels with EPE < 0.1 px | 99.98% | 5.24% |
 
-fp16 is nearly lossless -- its mean error is ~100x smaller than the model's own
-prediction error on standard benchmarks (1.8-3.1 EPE). bf16 is 14x worse than
+fp16 is nearly lossless — its mean error is ~100× smaller than the model's own
+prediction error on standard benchmarks (1.8–3.1 EPE). bf16 is 14× worse than
 fp16 because its 7-bit mantissa (vs fp16's 10-bit) cannot represent the small
 coordinate deltas that accumulate across RAFT's 12-iteration GRU loop. fp16 is
-the better choice for RAFT: both faster (34 ms vs 51 ms) and far more accurate.
+the better choice for RAFT: both faster (~30 ms vs 51 ms) and far more accurate.
 
 ### Why fp16 is faster than bf16 on RDNA 3.5
 
@@ -46,24 +51,16 @@ across all operation types:
 
 | Operation (RAFT-sized) | fp32 | fp16 | bf16 |
 |------------------------|------|------|------|
-| Element-wise FMA | 30 us | 17 us (1.75x) | 17 us (1.74x) |
-| grid_sample | 1029 us | 780 us (1.32x) | 782 us (1.32x) |
-| matmul | 179 us | 18 us (10x) | 19 us (9.2x) |
-| conv2d 3x3 (128ch, 47x84) | 75 us | 47 us (1.58x) | 84 us (0.89x) |
+| Element-wise FMA | 30 us | 17 us (1.75×) | 17 us (1.74×) |
+| grid_sample | 1029 us | 780 us (1.32×) | 782 us (1.32×) |
+| matmul | 179 us | 18 us (10×) | 19 us (9.2×) |
+| conv2d 3×3 (128ch, 47×84) | 75 us | 47 us (1.58×) | 84 us (0.89×) |
 
 Element-wise ops, grid_sample, and matmul are equally fast in fp16 and bf16.
-However, bf16 conv2d on small feature maps is **slower than fp32** -- the
+However, bf16 conv2d on small feature maps is **slower than fp32** — the
 MIOpen kernel library on ROCm 7.2 selects a suboptimal code path for bf16 at
 this tensor size. Since RAFT runs many small convolutions in its 12-iteration
 GRU loop, this regression erases any bandwidth savings from smaller tensors.
-
-**How this was measured:** each operation was run in isolation on the GPU using
-tensor sizes matching the RAFT model's internal feature maps. A warmup of 50
-iterations was followed by 1000 timed iterations, with `torch.cuda.synchronize()`
-before and after to ensure all GPU work completes before reading the wall clock.
-The end-to-end RAFT benchmarks (performance table above) used 50 timed iterations
-after a 5-iteration warmup.  All numbers are from a single-run session on the
-hardware listed at the top of this file.
 
 ## Setup
 
@@ -75,38 +72,46 @@ source .venv/bin/activate
 ## Input video
 
 Place any MP4 (or other OpenCV-readable) video file in this directory.
-For example, download one of the free sample clips from
+For example, download a free sample clip from
 [Pexels](https://www.pexels.com/search/videos/) or use your own recording.
 
 ## Run
 
+The output format is inferred from the file extension:
+
+- **Video extension** (`.mp4`, `.avi`, `.mov`, `.mkv`, `.webm`) — processes every
+  consecutive frame pair and writes a 2×2 composite H.264 video.
+- **Image extension** (`.png`, `.jpg`, etc.) — processes only the single frame pair
+  at `--frame` and saves a PNG.
+- **No `--output`** — defaults to `optical_flow_vectors_video.mp4` (whole video).
+
 ```bash
+# Whole video (default)
 python infer_optical_flow.py --video input.mp4
+
+# Whole video, explicit output
+python infer_optical_flow.py --video input.mp4 --output flow.mp4
+
+# Single frame pair → PNG
+python infer_optical_flow.py --video input.mp4 --frame 42 --output frame42.png
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--video` | *(required)* | Path to the input video file |
-| `--frame` | `0` | 0-based index of the first frame; second frame is `frame + 1` |
-| `--output` | `.png` / `.mp4` | Output path (auto-selects format based on `--realtime`) |
-| `--resize` | auto | Explicit `HxW` (e.g. `520x960`); if omitted, dims are rounded down to a multiple of 8 |
-| `--compile` | `True` | `torch.compile` for faster inference (set `False` to disable) |
+| `--video` | `Geisskopf_Gap_Jump.mp4` | Path to the input video file |
+| `--frame` | `0` | 0-based index of the first frame (second frame is `frame + 1`); single-pair mode only |
+| `--output` | `optical_flow_vectors_video.mp4` | Output path — video extension → whole video; image extension → single pair |
+| `--resize` | `376x672` | `HxW` to resize frames before inference; `none` for native resolution |
+| `--compile` | `True` | Enable `torch.compile` |
+| `--compile-mode` | `reduce-overhead` | torch.compile mode: `default`, `reduce-overhead`, `max-autotune` |
 | `--param_dtype` | `fp16` | Inference precision: `fp32`, `fp16`, or `bf16` |
-| `--realtime` | off | Process every frame pair and write a side-by-side MP4 video |
+| `--vaapi` | `True` | Use AMD VAAPI hardware H.264 encoder if available; falls back to libx264 |
 
-### Single-pair mode (default)
+### Full-video mode
 
-Saves a side-by-side PNG: **frame 1 | frame 2 | flow visualization**.
-
-```
-python infer_optical_flow.py --video input.mp4
-```
-
-### Full-video mode (`--realtime`)
-
-Processes all consecutive frame pairs and writes a 2x2 H.264 MP4:
+Processes all consecutive frame pairs and writes a 2×2 H.264 MP4:
 
 ![Sample output frame](docs/sample_output.png)
 
@@ -115,7 +120,9 @@ Processes all consecutive frame pairs and writes a 2x2 H.264 MP4:
 | Frame N | Frame N+1 | Flow color wheel | Vector field overlay |
 
 The output video is encoded at the measured inference throughput so it plays
-back in real time (1 second of video = 1 second of processing).
+back in real time. H.264 encoding uses the AMD VCN hardware block via VAAPI
+by default (`--vaapi True`), keeping the CPU free and avoiding memory bus
+contention with GPU inference on the iGPU.
 
 ```bash
 python infer_optical_flow.py --video Geisskopf_Gap_Jump.mp4 --output optical_flow_vectors_video.mp4
@@ -138,15 +145,14 @@ Summary: 191 pairs  total=8.4s  avg=30.1 ms/pair  FPS=33.3
 Saved  : optical_flow_vectors_video.mp4
 ```
 
-**Reading the flow visualization:** the right panel uses the standard optical
-flow color wheel -- each color represents a direction of motion, and brightness
-represents speed.  What to expect:
+**Reading the flow visualization:** the color wheel encodes direction; brightness
+encodes speed.
 
-- **Camera panning/translating:** a uniform color across the whole frame (all
-  pixels move together in the same direction).
-- **Moving objects:** distinct colored regions that stand out against the
-  background, with sharp edges at object boundaries.
-- **Camera stationary:** a noisy, multi-colored pattern.  This is normal --
-  RAFT detects sub-pixel displacements from sensor noise and compression
-  artifacts.  The motion magnitudes are very small (< 1 pixel) but the color
-  wheel amplifies their random directions.
+- **Camera panning:** uniform color across the whole frame (all pixels move
+  together in the same direction).
+- **Moving objects:** distinct colored regions with sharp edges at object
+  boundaries, standing out against the background.
+- **Camera stationary:** noisy, multi-colored pattern. This is normal — RAFT
+  detects sub-pixel displacements from sensor noise and compression artifacts.
+  Motion magnitudes are very small (< 1 pixel) but the color wheel amplifies
+  their random directions.
