@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="RAFT Large optical-flow inference (PyTorch / ROCm)"
     )
-    p.add_argument("--video", default="Geisskopf_Gap_Jump.MOV", help="Path to input video file")
+    p.add_argument("--video", default="Geisskopf_Gap_Jump.mp4", help="Path to input video file")
     p.add_argument(
         "--frame",
         type=int,
@@ -81,7 +81,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output",
         default=None,
-        help="Output path (default: flow_output.png or flow_output.mp4 with --realtime)",
+        help="Output path — video extension (mp4, avi, mov, mkv) processes the whole video; "
+             "image extension (png, jpg) processes only --frame. Default: optical_flow_vectors_video.mp4",
     )
     p.add_argument(
         "--resize",
@@ -100,11 +101,6 @@ def parse_args() -> argparse.Namespace:
         choices=["fp32", "fp16", "bf16"],
         default="fp16",
         help="Inference precision: fp32, fp16, or bf16 (default: fp16)",
-    )
-    p.add_argument(
-        "--realtime",
-        action="store_true",
-        help="Process every frame pair and write a side-by-side MP4 video",
     )
     return p.parse_args()
 
@@ -304,7 +300,7 @@ def run_single_pair(args: argparse.Namespace) -> None:
 
     flow = list_of_flows[-1][0]
     magnitude = flow.norm(dim=0)
-    print(f"Latency: {elapsed_ms:.1f} ms  (excluding warmup)")
+    print(f"Summary: 1 double-frame processed  time={elapsed_ms:.1f} ms  FPS={1000.0/elapsed_ms:.1f}  (excluding warmup)")
     print(f"Flow   : shape={tuple(flow.shape)}  "
           f"mag min={magnitude.min():.3f}  max={magnitude.max():.3f}  mean={magnitude.mean():.3f}")
 
@@ -407,6 +403,7 @@ def run_realtime(args: argparse.Namespace) -> None:
 
     elapsed_total = 0.0
     pair_idx = 0
+    t_wall_start = time.perf_counter()
 
     print(f"Processing {total_pairs} frame pairs ...")
 
@@ -453,20 +450,32 @@ def run_realtime(args: argparse.Namespace) -> None:
     writer.close()
     cap.release()
 
+    wall_s = time.perf_counter() - t_wall_start
     avg_ms = (elapsed_total / pair_idx) * 1000 if pair_idx > 0 else 0
-    print(f"Done   : {pair_idx} pairs, avg {avg_ms:.1f} ms/pair ({1000/avg_ms:.1f} pairs/sec)")
+    fps = 1000.0 / avg_ms if avg_ms > 0 else 0
+    print(f"Summary: {pair_idx} double-frames processed  total={wall_s:.1f}s  avg={avg_ms:.1f} ms/pair  FPS={fps:.1f}")
     print(f"Saved  : {out_path.resolve()}")
 
 
 def main() -> None:
     args = parse_args()
 
-    if args.output is None:
-        args.output = "optical_flow_vectors_video.mp4" if args.realtime else "flow_output.png"
-    elif args.realtime and args.output.endswith(".png"):
-        args.output = args.output.rsplit(".", 1)[0] + ".mp4"
+    _VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
-    if args.realtime:
+    if args.output is None:
+        args.output = "optical_flow_vectors_video.mp4"
+        whole_video = True
+    else:
+        ext = Path(args.output).suffix.lower()
+        if ext in _VIDEO_EXTS:
+            whole_video = True
+        elif ext in _IMAGE_EXTS:
+            whole_video = False
+        else:
+            sys.exit(f"ERROR: unrecognized output extension '{ext}'. Use a video ({', '.join(sorted(_VIDEO_EXTS))}) or image ({', '.join(sorted(_IMAGE_EXTS))}) extension.")
+
+    if whole_video:
         run_realtime(args)
     else:
         run_single_pair(args)
