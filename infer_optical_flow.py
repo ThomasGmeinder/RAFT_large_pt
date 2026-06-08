@@ -104,6 +104,12 @@ def parse_args() -> argparse.Namespace:
         help="Use torch.compile (default: True)",
     )
     p.add_argument(
+        "--compile-mode",
+        default="reduce-overhead",
+        choices=["default", "reduce-overhead", "max-autotune"],
+        help="torch.compile mode (default: reduce-overhead)",
+    )
+    p.add_argument(
         "--param_dtype",
         choices=["fp32", "fp16", "bf16"],
         default="fp16",
@@ -239,10 +245,10 @@ def setup_model(args: argparse.Namespace):
     weights = Raft_Large_Weights.DEFAULT
     model = raft_large(weights=weights, progress=True).to(device).eval()
     if args.compile:
-        model = torch.compile(model)
+        model = torch.compile(model, mode=args.compile_mode)
     transforms = weights.transforms()
 
-    tags = ["compiled" if args.compile else "eager", args.param_dtype]
+    tags = [f"compiled({args.compile_mode})" if args.compile else "eager", args.param_dtype]
     print(f"Model  : RAFT Large  ({sum(p.numel() for p in model.parameters()):,} params, {', '.join(tags)})")
 
     amp_ctx = torch.autocast(device.type, dtype=amp_dtype) if amp_dtype else nullcontext()
@@ -322,10 +328,11 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
         )
         print(f"Output : {out_path}  ({out_w * 2}x{out_h * 2}, {out_fps:.1f} fps, H.264)")
 
-    # Reset to start; preprocess first frame once — cached across iterations as t1_p
+    # Reset to start; preprocess first frame once — upload to device and keep there
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     ok, bgr_prev = cap.read()
     t1_p = preprocess_one(to_tensor(cv2.cvtColor(bgr_prev, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
+    t1_d = t1_p.to(device)  # stays on GPU; swapped with t2_d each iteration
 
     elapsed_total = 0.0
     pair_idx = 0
@@ -338,14 +345,15 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
         if not ok:
             break
 
-        # Preprocess only the new frame; t1_p comes from the previous iteration's t2_p
+        # Preprocess only the new frame; t1_p cached from previous t2_p (CPU side for composite)
         t2_p = preprocess_one(to_tensor(cv2.cvtColor(bgr_next, cv2.COLOR_BGR2RGB)), transforms, resize_hw).unsqueeze(0)
+        t2_d = t2_p.to(device)  # H2D for new frame only; t1_d already on device
 
         torch.cuda.synchronize() if device.type == "cuda" else None
         t0 = time.perf_counter()
 
         with torch.no_grad(), amp_ctx:
-            list_of_flows = model(t1_p.to(device), t2_p.to(device))
+            list_of_flows = model(t1_d, t2_d)
 
         torch.cuda.synchronize() if device.type == "cuda" else None
         result = FlowResult(flow=list_of_flows[-1][0].cpu(), elapsed_s=time.perf_counter() - t0)
@@ -359,7 +367,8 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
         if whole_video:
             writer.append_data(composite)
 
-        t1_p = t2_p  # cache: next iteration's frame1 is this iteration's frame2
+        t1_d = t2_d  # swap: next iteration's frame1 stays on GPU — no re-upload
+        t1_p = t2_p  # keep CPU copy in sync for composite building
         pair_idx += 1
 
         if whole_video and (pair_idx % 100 == 0 or pair_idx == total_pairs):
