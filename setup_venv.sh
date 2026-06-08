@@ -37,8 +37,11 @@ for WHL in "${TRITON_WHL}" "${TORCH_WHL}" "${VISION_WHL}"; do
     fi
 done
 
-echo "Installing triton + PyTorch + torchvision (ROCm 7.2.1) ..."
-pip install "${WHEEL_DIR}"/triton-*.whl "${WHEEL_DIR}"/torch-*.whl "${WHEEL_DIR}"/torchvision-*.whl
+echo "Installing triton + PyTorch + torchvision (ROCm 7.2.4) ..."
+TRITON_LOCAL="$(python3 -c "import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1]))" "${TRITON_WHL}")"
+TORCH_LOCAL="$(python3 -c "import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1]))" "${TORCH_WHL}")"
+VISION_LOCAL="$(python3 -c "import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1]))" "${VISION_WHL}")"
+pip install "${WHEEL_DIR}/${TRITON_LOCAL}" "${WHEEL_DIR}/${TORCH_LOCAL}" "${WHEEL_DIR}/${VISION_LOCAL}"
 
 # --- pip dependencies ---
 echo "Installing remaining dependencies ..."
