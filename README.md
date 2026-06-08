@@ -16,10 +16,10 @@ with ROCm 7.2.1 on Ubuntu 24.04.
 | `--compile True --param_dtype bf16` | 51 ms | ~19.6 (1.32×) |
 | compiled fp16, no CorrBlock patch | 50 ms | ~20.1 (1.34×) |
 | `--compile True --param_dtype fp16` (`--compile-mode default`) | 34 ms | ~29.7 (1.97×) |
-| **Default** (`--compile-mode reduce-overhead --param_dtype fp16`) | **~30 ms** | **~33 (2.24×)** |
+| **Default** (`--compile-mode reduce-overhead --param_dtype fp16`) | **~29 ms** | **~34.5 (2.33×)** |
 
 `--compile-mode reduce-overhead` uses HIP graph capture to replay RAFT's
-12-iteration GRU loop with near-zero kernel launch overhead, adding ~3 FPS
+12-iteration GRU loop with near-zero kernel launch overhead, adding ~4–5 FPS
 over the default compile mode.
 
 fp16/bf16 autocast alone barely helps because `grid_sample` — called 48
@@ -42,7 +42,7 @@ fp16 is nearly lossless — its mean error is ~100× smaller than the model's ow
 prediction error on standard benchmarks (1.8–3.1 EPE). bf16 is 14× worse than
 fp16 because its 7-bit mantissa (vs fp16's 10-bit) cannot represent the small
 coordinate deltas that accumulate across RAFT's 12-iteration GRU loop. fp16 is
-the better choice for RAFT: both faster (~30 ms vs 51 ms) and far more accurate.
+the better choice for RAFT: both faster (~29 ms vs 51 ms) and far more accurate.
 
 ### Why fp16 is faster than bf16 on RDNA 3.5
 
@@ -136,12 +136,12 @@ Frames : 0 .. 191
 Resize : 1280x720 -> 672x376
 Input  : torch.Size([1, 3, 376, 672])  dtype=torch.float32
 Warmup ...
-Calibration: 27.9 ms/pair (35.9 fps) -> output 30.0 fps
+Calibration: 28.1 ms/pair (35.6 fps) -> output 30.0 fps
 Output : optical_flow_vectors_video.mp4  (1344x752, 30.0 fps, H.264/VAAPI)
 Processing 191 image pairs ...
-    100/191  avg=30.0 ms/pair  ETA=3s
-    191/191  avg=30.1 ms/pair  ETA=0s
-Summary: 191 pairs  total=8.4s  avg=30.1 ms/pair  FPS=33.3
+    100/191  avg=28.8 ms/pair  ETA=3s
+    191/191  avg=29.0 ms/pair  ETA=0s
+Summary: 191 pairs  total=7.9s  avg=29.0 ms/pair  FPS=34.5
 Saved  : optical_flow_vectors_video.mp4
 ```
 
