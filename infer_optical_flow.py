@@ -392,7 +392,7 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
     elapsed_total = 0.0
     pair_idx = 0
     t_wall = time.perf_counter()
-    print(f"Processing {total_pairs} pair{'s' if total_pairs > 1 else ''} ...")
+    print(f"Processing {total_pairs} image pair{'s' if total_pairs > 1 else ''} ...")
 
     composite = result = None  # satisfy reference-before-assignment for single-pair path
     while pair_idx < total_pairs:

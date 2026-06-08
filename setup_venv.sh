@@ -17,11 +17,8 @@ if [ -d "${VENV_DIR}" ]; then
     echo "Existing venv found at ${VENV_DIR}, reusing it."
 else
     echo "Creating Python 3.12 venv at ${VENV_DIR} ..."
-    python3 -m venv "${VENV_DIR}"
+    uv venv --python 3.12 "${VENV_DIR}"
 fi
-
-source "${VENV_DIR}/bin/activate"
-pip install --upgrade pip wheel
 
 # --- AMD ROCm wheels ---
 mkdir -p "${WHEEL_DIR}"
@@ -37,20 +34,20 @@ for WHL in "${TRITON_WHL}" "${TORCH_WHL}" "${VISION_WHL}"; do
     fi
 done
 
-echo "Installing triton + PyTorch + torchvision (ROCm 7.2.4) ..."
+echo "Installing triton + PyTorch + torchvision (ROCm 7.2.1) ..."
 TRITON_LOCAL="$(python3 -c "import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1]))" "${TRITON_WHL}")"
 TORCH_LOCAL="$(python3 -c "import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1]))" "${TORCH_WHL}")"
 VISION_LOCAL="$(python3 -c "import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1]))" "${VISION_WHL}")"
-pip install "${WHEEL_DIR}/${TRITON_LOCAL}" "${WHEEL_DIR}/${TORCH_LOCAL}" "${WHEEL_DIR}/${VISION_LOCAL}"
+uv pip install --python "${VENV_DIR}/bin/python" "${WHEEL_DIR}/${TRITON_LOCAL}" "${WHEEL_DIR}/${TORCH_LOCAL}" "${WHEEL_DIR}/${VISION_LOCAL}"
 
-# --- pip dependencies ---
+# --- dependencies ---
 echo "Installing remaining dependencies ..."
-pip install "numpy<2" opencv-python matplotlib
+uv pip install --python "${VENV_DIR}/bin/python" "numpy<2" opencv-python matplotlib
 
 # --- verify ---
 echo ""
 echo "=== Verification ==="
-python3 -c "
+"${VENV_DIR}/bin/python" -c "
 import torch, torchvision
 print(f'PyTorch  : {torch.__version__}')
 print(f'TorchVision: {torchvision.__version__}')
