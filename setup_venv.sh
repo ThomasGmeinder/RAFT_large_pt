@@ -164,6 +164,6 @@ else
 fi
 
 echo "Installing remaining dependencies ..."
-uv pip install --python "${VENV_DIR}/bin/python" --system-certs "numpy<2" opencv-python matplotlib
+uv pip install --python "${VENV_DIR}/bin/python" --system-certs "numpy<2" opencv-python matplotlib jupyterlab
 
 verify
