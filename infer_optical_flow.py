@@ -293,6 +293,7 @@ class VaapiWriter:
     """
 
     VAAPI_DEVICE = "/dev/dri/renderD128"
+    _unavailable_reason = ""
 
     def __init__(self, path: str, fps: float, width: int, height: int):
         cmd = [
@@ -305,18 +306,61 @@ class VaapiWriter:
             "-c:v", "h264_vaapi", "-qp", "18",
             path,
         ]
-        self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def append_data(self, frame: np.ndarray) -> None:
-        self._proc.stdin.write(frame.tobytes())
+        try:
+            self._proc.stdin.write(frame.tobytes())
+        except BrokenPipeError:
+            raise RuntimeError(self._failure_message()) from None
 
     def close(self) -> None:
         self._proc.stdin.close()
-        self._proc.wait()
+        returncode = self._proc.wait()
+        if returncode != 0:
+            raise RuntimeError(self._failure_message(returncode))
+
+    def _failure_message(self, returncode: int | None = None) -> str:
+        err = self._proc.stderr.read().decode(errors="replace").strip()
+        code = self._proc.returncode if returncode is None else returncode
+        detail = err.splitlines()[-1] if err else "broken pipe"
+        return f"ffmpeg VAAPI encoder failed ({code}): {detail}"
 
     @classmethod
     def is_available(cls) -> bool:
-        return shutil.which("ffmpeg") is not None and os.path.exists(cls.VAAPI_DEVICE)
+        """True only when ffmpeg can open the VAAPI device and encode a frame.
+
+        The render node existing is not enough: this container has libva but no
+        ``*_drv_video.so``, so ffmpeg exits immediately and the pipe breaks.
+        """
+        cls._unavailable_reason = ""
+        if shutil.which("ffmpeg") is None:
+            cls._unavailable_reason = "ffmpeg not found"
+            return False
+        if not os.path.exists(cls.VAAPI_DEVICE):
+            cls._unavailable_reason = f"{cls.VAAPI_DEVICE} not found"
+            return False
+        probe = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-vaapi_device", cls.VAAPI_DEVICE,
+                "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                "-vf", "format=nv12,hwupload",
+                "-c:v", "h264_vaapi", "-frames:v", "1",
+                "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode != 0:
+            err = (probe.stderr or "").strip().splitlines()
+            preferred = next(
+                (line for line in err if "VAAPI" in line or "Failed to initialise" in line),
+                None,
+            )
+            cls._unavailable_reason = preferred or (err[-1] if err else f"ffmpeg exited {probe.returncode}")
+            return False
+        return True
 
 
 def set_pmode(mode: str) -> None:
@@ -460,6 +504,8 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
             writer = VaapiWriter(str(out_path), out_fps, composite_w, composite_h)
             print(f"Output : {out_path}  ({composite_w}x{composite_h}, {out_fps:.1f} fps, H.264/VAAPI)")
         else:
+            if args.vaapi and VaapiWriter._unavailable_reason:
+                print(f"VAAPI unavailable ({VaapiWriter._unavailable_reason}); using libx264.")
             import imageio
             writer = imageio.get_writer(
                 str(out_path), fps=out_fps, codec="libx264",

@@ -105,10 +105,16 @@ else:
     echo "Setup complete.  Activate with:  source ${VENV_DIR}/bin/activate"
 }
 
+# Cursor and the Python extension discover ${workspace}/.venv only.
+link_default_venv() {
+    ln -sfn ".venv-rocm-${ROCM_VERSION}" "${SCRIPT_DIR}/.venv"
+}
+
 if [ -d "${VENV_DIR}" ]; then
     current="$(torch_version)"
     if [[ "${current}" == *"${VERSION_TAG}"* ]]; then
         echo "ROCm ${ROCM_VERSION} already present in ${VENV_DIR} (${current})."
+        link_default_venv
         verify
         exit 0
     fi
@@ -166,4 +172,5 @@ fi
 echo "Installing remaining dependencies ..."
 uv pip install --python "${VENV_DIR}/bin/python" --system-certs "numpy<2" opencv-python matplotlib jupyterlab
 
+link_default_venv
 verify

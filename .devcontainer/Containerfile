@@ -1,0 +1,30 @@
+FROM mcr.microsoft.com/devcontainers/python:3.12-bookworm
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        ffmpeg \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_INSTALL_DIR=/usr/local/bin
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# The torch-cache volume is mounted at /home/vscode/.cache/torch. Docker creates
+# missing parents as root, which blocks the vscode user from ~/.cache/uv.
+RUN mkdir -p /home/vscode/.cache/torch \
+    && chown -R vscode:vscode /home/vscode/.cache
+
+WORKDIR /workspaces/RAFT_large_pt
+
+CMD ["sleep", "infinity"]

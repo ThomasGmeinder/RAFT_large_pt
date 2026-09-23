@@ -1,0 +1,6 @@
+.git
+.venv-rocm-*
+.wheels
+outputs
+**/*.mp4
+notebooks/.ipynb_checkpoints
