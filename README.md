@@ -114,6 +114,7 @@ python infer_optical_flow.py --video input.mp4 --frame 42 --output frame42.png
 | `--compile-mode` | `reduce-overhead` | torch.compile mode: `default`, `reduce-overhead`, `max-autotune` |
 | `--param_dtype` | `fp16` | Inference precision: `fp32`, `fp16`, or `bf16` |
 | `--vaapi` | `True` | Use AMD VAAPI hardware H.264 encoder if available; falls back to libx264 |
+| `--pmode` | `performance` | AMD GPU power state: `battery`, `balanced`, or `performance`. Sets it with `sudo` before inference, prompting for your password when the current state differs |
 
 ### Full-video mode
 

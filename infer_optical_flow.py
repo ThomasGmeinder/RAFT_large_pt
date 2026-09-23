@@ -148,6 +148,13 @@ def parse_args() -> argparse.Namespace:
         metavar="BOOL",
         help="Use VAAPI hardware H.264 encoder if available (default: True)",
     )
+    p.add_argument(
+        "--pmode",
+        choices=["battery", "balanced", "performance"],
+        default="performance",
+        help="AMD GPU power state to set via sudo (default: performance). "
+             "Prompts for your password when the current state differs.",
+    )
     return p.parse_args()
 
 
@@ -294,6 +301,45 @@ class VaapiWriter:
     @classmethod
     def is_available(cls) -> bool:
         return shutil.which("ffmpeg") is not None and os.path.exists(cls.VAAPI_DEVICE)
+
+
+def set_pmode(mode: str) -> None:
+    """Write *mode* to the AMD GPU ``power_dpm_state`` node.
+
+    sudo prompts on the terminal when a change is required. The value is passed
+    to ``tee`` on stdin, not through the shell.
+    """
+    nodes = []
+    for vendor in sorted(Path("/sys/class/drm").glob("card*/device/vendor")):
+        try:
+            if vendor.read_text().strip().lower() != "0x1002":
+                continue
+        except OSError:
+            continue
+        node = vendor.parent / "power_dpm_state"
+        if node.is_file():
+            nodes.append(node)
+    if not nodes:
+        sys.exit("ERROR: no AMD GPU power_dpm_state node found")
+
+    for node in nodes:
+        current = node.read_text().strip()
+        if current == mode:
+            print(f"GPU pmode already {mode} ({node})")
+            continue
+        print(f"Setting GPU pmode to {mode} (sudo will prompt for your password) ...")
+        print(f"  {node}")
+        try:
+            subprocess.run(
+                ["sudo", "tee", str(node)],
+                input=f"{mode}\n",
+                text=True,
+                stdout=subprocess.DEVNULL,
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            sys.exit(f"ERROR: sudo failed to set pmode ({exc.returncode})")
+        print(f"  pmode: {node.read_text().strip()}")
 
 
 def setup_model(args: argparse.Namespace):
@@ -474,6 +520,7 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
 
 def main() -> None:
     args = parse_args()
+    set_pmode(args.pmode)
 
     _VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
     _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
