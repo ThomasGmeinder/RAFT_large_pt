@@ -21,6 +21,28 @@ from pathlib import Path
 import shutil
 import subprocess
 
+# /tmp is mounted noexec on this machine, so Triton cannot dlopen the kernels
+# it compiles into the default cache location. This is independent of ROCm version.
+os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(Path.home() / ".cache" / "torchinductor"))
+os.environ.setdefault("TRITON_CACHE_DIR", str(Path.home() / ".cache" / "triton"))
+
+
+def _installed_torch_version() -> str:
+    """Return the installed torch distribution version without loading libtorch."""
+    try:
+        from importlib.metadata import version
+
+        return version("torch")
+    except Exception:
+        return ""
+
+
+# ROCm 10 wheels report ~0 ms from hipEvent, so MIOpen Find rejects every
+# convolution solver. FAST mode skips that benchmark. ROCm 7.2.x can time
+# kernels and must keep the default Find mode. See docs/rocm_issues.md.
+if "+rocm10." in _installed_torch_version():
+    os.environ.setdefault("MIOPEN_FIND_MODE", "2")
+
 import cv2
 import numpy as np
 import torch
