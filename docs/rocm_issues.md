@@ -66,9 +66,13 @@ then ranks Triton GEMMs at about **−173,000,000 ms** and cannot choose a kerne
   `/opt/rocm`.
 
 **Resolution in use.** For an installed torch version containing `+rocm10.`,
-the script sets `MIOPEN_FIND_MODE=2` (FAST) before torch is imported. FAST skips
-the benchmark and uses an immediate fallback kernel. That is enough to run, and
-it is slower than a tuned kernel. ROCm 7.2.1 and 7.2.4 do not set this variable.
+the script sets `MIOPEN_FIND_MODE=1` (normal Find) before torch is imported.
+On this host (system ROCm 7.2.1, 2026-09-23) a 4096 fp16 GEMM is 4.06 ms of
+wall time and 4.04 ms by hipEvent, so Find completes. A RAFT forward is
+26.1 ms with normal Find, 35.6 ms with FAST (`2`), and 28.4 ms on the
+ROCm 7.2.1 wheel. An exported `MIOPEN_FIND_MODE` still wins. ROCm 7.2.x
+wheels do not set this variable. FAST remains the workaround only when the
+event timer reports ~0 ms, as on the ROCm 7.2.4 host below.
 
 Forcing a single solver with `MIOPEN_DEBUG_FIND_ONLY_SOLVER` under the default
 Find mode still failed the elapsed-time check. Under FAST, several named solvers
@@ -87,6 +91,8 @@ noted. "Forward" is the calibration or a synced loop around `model(...)` only.
 | ROCm 7.2.4 wheels, this machine, 2026-09-23, FAST still forced for every version | 40.0 ms (25.0 fps) | 52.6 ms (19.0 fps) |
 | ROCm 7.2.4 wheels, this machine, 2026-09-23, default Find, pmode already `performance` | 35.3 ms (28.3 fps) | 38.9 ms (25.7 fps) |
 | ROCm 10.0.0 wheels, FAST | 44.0 ms calibration; 44.8 ms mean over 15 iters | 60.9 ms (16.4 fps) |
+| ROCm 10.0.0 wheels, this host ROCm 7.2.1, FAST, 2026-09-23 | 35.6 ms (28.1 fps) | 37.7 ms (26.5 fps) |
+| ROCm 10.0.0 wheels, this host ROCm 7.2.1, normal Find (`MIOPEN_FIND_MODE=1`), 2026-09-23 | 26.1 ms (38.3 fps) | |
 
 ROCm 10 forward-only, 15 iterations after warmup, still in FAST mode:
 

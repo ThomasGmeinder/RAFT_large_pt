@@ -52,11 +52,12 @@ def _rocm_release() -> str:
     return ".".join(parts)
 
 
-# ROCm 10 wheels report ~0 ms from hipEvent, so MIOpen Find rejects every
-# convolution solver. FAST mode skips that benchmark. ROCm 7.2.x can time
-# kernels and must keep the default Find mode. See docs/rocm_issues.md.
+# Normal MIOpen Find (1) picks a tuned convolution. FAST (2) skips that search
+# and measured 35.6 ms/pair versus 26.1 ms here. On this host the hipEvent
+# timer matches wall time, so Find completes. An exported value still wins.
+# ROCm 7.2.x keeps MIOpen's own default. See docs/rocm_issues.md.
 if "+rocm10." in _installed_torch_version():
-    os.environ.setdefault("MIOPEN_FIND_MODE", "2")
+    os.environ.setdefault("MIOPEN_FIND_MODE", "1")
 
 import cv2
 import numpy as np

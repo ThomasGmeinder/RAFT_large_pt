@@ -8,10 +8,20 @@ Tested on **AMD Ryzen AI MAX+ 395 / Radeon 8060S (Strix Halo, gfx1151)**
 on Ubuntu 24.04. The environment installs **ROCm 10.0.0**
 (`torch 2.13.0+rocm10.0.0`, `torchvision 0.28.0+rocm10.0.0`, gfx1151 wheels).
 
-**Performance** at 672×376 on the integrated GPU, measured on ROCm 7.2.1.
-ROCm 10.0.0 is slower with the same flags because its GPU event timer breaks
-MIOpen's convolution search. The script enables MIOpen FAST mode only for a
-`+rocm10` PyTorch build. Issue log: [docs/rocm_issues.md](docs/rocm_issues.md).
+**Performance** at 672×376 on the integrated GPU, fp16,
+`--compile-mode reduce-overhead`. Forward time is a synced loop around
+`model(...)` only. On a `+rocm10` build the script sets `MIOPEN_FIND_MODE=1`
+(normal convolution search) before importing torch. Issue log:
+[docs/rocm_issues.md](docs/rocm_issues.md).
+
+| Stack | Forward | FPS |
+|-------|---------|-----|
+| **ROCm 10.0.0** (`MIOPEN_FIND_MODE=1`) | **26.1 ms** | **38.3** |
+| ROCm 7.2.1 | 28.4 ms | 35.2 |
+
+**Performance optimisation history** at 672×376. Rows above the last one are
+the full-video average, which also copies the flow tensor back to the CPU.
+The last row is the forward time, the same measurement as the headline.
 
 | Configuration | Latency | FPS |
 |---------------|---------|-----|
@@ -20,7 +30,8 @@ MIOpen's convolution search. The script enables MIOpen FAST mode only for a
 | `--compile True --param_dtype bf16` | 51 ms | ~19.6 (1.32×) |
 | compiled fp16, no CorrBlock patch | 50 ms | ~20.1 (1.34×) |
 | `--compile True --param_dtype fp16` (`--compile-mode default`) | 34 ms | ~29.7 (1.97×) |
-| **Default** (`--compile-mode reduce-overhead --param_dtype fp16`) | **~29 ms** | **~34.5 (2.33×)** |
+| `--compile-mode reduce-overhead --param_dtype fp16` | ~29 ms | ~34.5 (2.33×) |
+| **ROCm 10.0.0**, `MIOPEN_FIND_MODE=1`, forward | **26.1 ms** | **38.3 (2.57×)** |
 
 `--compile-mode reduce-overhead` uses HIP graph capture to replay RAFT's
 12-iteration GRU loop with near-zero kernel launch overhead, adding ~4–5 FPS
@@ -168,7 +179,7 @@ encodes speed.
 
 `infer_optical_flow.py` sets cache directories at import time with
 `os.environ.setdefault`, so exporting your own value overrides each one.
-`MIOPEN_FIND_MODE=2` is set the same way only when the installed PyTorch
+`MIOPEN_FIND_MODE=1` is set the same way only when the installed PyTorch
 build is `+rocm10`. The full issue log is [docs/rocm_issues.md](docs/rocm_issues.md).
 
 **`ImportError: ... hip_utils...so: failed to map segment from shared object`**
@@ -184,13 +195,14 @@ With `MIOPEN_LOG_LEVEL=5` this shows up as `Invalid elapsed time detected in
 EvaluateInvokers, failed condition: elapsed <= 0`, followed by `No suitable
 algorithm was found to execute the required convolution`.
 
-On a `+rocm10` build, `torch.cuda.Event.elapsed_time` returns about 0.01 ms
-for work that takes about 87 ms of wall time. MIOpen benchmarks every
-convolution solver with those events, reads a non-positive elapsed time, and
-discards all of them. The script then sets `MIOPEN_FIND_MODE=2` (FAST).
-ROCm 7.2.1 and 7.2.4 do not get that override.
+On a host with ROCm 7.2.4, a `+rocm10` build reported about 0.01 ms from
+`torch.cuda.Event.elapsed_time` for work that took about 87 ms. MIOpen Find
+then rejected every solver. FAST mode (`MIOPEN_FIND_MODE=2`) ran, and it is
+slower. On this machine the host install is ROCm 7.2.1, the event time matches
+wall time, and normal Find is faster (26.1 ms/pair versus 35.6 ms in FAST).
+The script sets `MIOPEN_FIND_MODE=1` for a `+rocm10` build. ROCm 7.2.1 and
+7.2.4 wheels do not get that override.
 
-FAST mode skips the benchmark and uses an immediate fallback kernel, which is
-slower. Replacing the host ROCm 7.2.4 libraries with the wheel copies did not
+Replacing the host ROCm 7.2.4 libraries with the wheel copies did not
 restore the timer. The script's own timings use `time.perf_counter()` around
 explicit `torch.cuda.synchronize()` calls, not hipEvents.
