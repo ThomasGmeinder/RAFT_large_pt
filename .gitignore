@@ -6,3 +6,5 @@ __pycache__/
 *.mp4
 flow_output.png
 flow_comparison.png
+outputs/
+.ipynb_checkpoints/

@@ -86,6 +86,10 @@ bash setup_venv.sh 10.0.0   # gfx1151 Python wheels only
 source .venv-rocm-7.2.1/bin/activate   # or .venv-rocm-7.2.4 / .venv-rocm-10.0.0
 ```
 
+A step-by-step colleague walkthrough is in
+[notebooks/raft_large_playbook.ipynb](notebooks/raft_large_playbook.ipynb).
+`FAST_MODE = True` runs one frame pair. Set it to `False` for the whole video.
+
 ## Input video
 
 Place any MP4 (or other OpenCV-readable) video file in this directory.
