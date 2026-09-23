@@ -65,7 +65,9 @@ GRU loop, this regression erases any bandwidth savings from smaller tensors.
 ## Setup
 
 ```bash
-bash setup_venv.sh          # creates .venv, downloads ROCm 7.2.1 wheels
+bash setup_venv.sh 7.2.1    # manylinux wheels
+bash setup_venv.sh 7.2.4    # manylinux wheels; ROCm 7.2.4 is installed on this machine
+bash setup_venv.sh 10.0.0   # gfx1151 Python wheels only
 source .venv/bin/activate
 ```
 
