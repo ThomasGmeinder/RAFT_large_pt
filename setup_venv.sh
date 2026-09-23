@@ -2,7 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="${SCRIPT_DIR}/.venv"
 WHEEL_DIR="${SCRIPT_DIR}/.wheels"
 
 usage() {
@@ -24,6 +23,7 @@ if [[ $# -ne 1 || "${1}" == "-h" || "${1}" == "--help" ]]; then
 fi
 
 ROCM_VERSION="$1"
+VENV_DIR="${SCRIPT_DIR}/.venv-rocm-${ROCM_VERSION}"
 
 system_rocm_version() {
     local dest

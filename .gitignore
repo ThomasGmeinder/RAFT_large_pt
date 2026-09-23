@@ -1,4 +1,5 @@
 .venv/
+.venv-rocm-*/
 .wheels/
 __pycache__/
 *.pyc
