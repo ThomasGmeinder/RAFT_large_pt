@@ -37,6 +37,21 @@ def _installed_torch_version() -> str:
         return ""
 
 
+def _rocm_release() -> str:
+    """Return the ROCm release in the torch build, e.g. ``7.2.1`` from ``+rocm7.2.1``."""
+    version = _installed_torch_version()
+    marker = "+rocm"
+    start = version.find(marker)
+    if start == -1:
+        return ""
+    parts = []
+    for token in version[start + len(marker) :].split("."):
+        if not token.isdigit():
+            break
+        parts.append(token)
+    return ".".join(parts)
+
+
 # ROCm 10 wheels report ~0 ms from hipEvent, so MIOpen Find rejects every
 # convolution solver. FAST mode skips that benchmark. ROCm 7.2.x can time
 # kernels and must keep the default Find mode. See docs/rocm_issues.md.
@@ -345,10 +360,11 @@ def set_pmode(mode: str) -> None:
 def setup_model(args: argparse.Namespace):
     """Shared setup: device, precision, model, transforms, autocast context."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    rocm = _rocm_release() or getattr(torch.version, "hip", None) or "unknown"
     if device.type == "cuda":
-        print(f"Device : {torch.cuda.get_device_name(0)}  (ROCm/HIP)")
+        print(f"Device : {torch.cuda.get_device_name(0)}  (ROCm {rocm})")
     else:
-        print("WARNING: No GPU detected — running on CPU (will be slow).")
+        print(f"WARNING: No GPU detected — running on CPU (will be slow). ROCm {rocm}")
 
     dtype_map = {"fp32": None, "fp16": torch.float16, "bf16": torch.bfloat16}
     amp_dtype = dtype_map[args.param_dtype]

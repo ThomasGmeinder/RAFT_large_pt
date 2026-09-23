@@ -136,7 +136,7 @@ python infer_optical_flow.py --video Geisskopf_Gap_Jump.mp4 --output optical_flo
 ```
 
 ```
-Device : AMD Radeon Graphics  (ROCm/HIP)
+Device : AMD Radeon Graphics  (ROCm 7.2.1)
 Model  : RAFT Large  (5,257,536 params, compiled(reduce-overhead), fp16)
 Video  : Geisskopf_Gap_Jump.mp4  (1280x720, 192 frames, 30.0 fps)
 Frames : 0 .. 191
