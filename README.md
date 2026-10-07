@@ -35,7 +35,9 @@ The last row is the forward time, the same measurement as the headline.
 
 `--compile-mode reduce-overhead` uses HIP graph capture to replay RAFT's
 12-iteration GRU loop with near-zero kernel launch overhead, adding ~4–5 FPS
-over the default compile mode.
+over the default compile mode. Mapped zero-copy between CPU and iGPU does not
+change this number: the frame and flow copies are under 0.1 ms.
+[docs/zero_copy_analysis.md](docs/zero_copy_analysis.md).
 
 fp16/bf16 autocast alone barely helps because `grid_sample` — called 48
 times per forward pass — is not in autocast's promotion list and stays in fp32.

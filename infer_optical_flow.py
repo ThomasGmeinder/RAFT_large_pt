@@ -68,6 +68,11 @@ from torchvision.models.optical_flow._utils import grid_sample as _grid_sample
 from torchvision.models.optical_flow.raft import CorrBlock
 from torchvision.utils import flow_to_image
 
+# CPU postprocessing runs small ops on a 376x672 flow. On the 32-core host the
+# default intra-op pool made flow_to_image 389 ms/frame versus 1.7 ms at 4.
+if "OMP_NUM_THREADS" not in os.environ:
+    torch.set_num_threads(4)
+
 
 @dataclass
 class FlowResult:
@@ -344,7 +349,9 @@ class VaapiWriter:
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-vaapi_device", cls.VAAPI_DEVICE,
-                "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                # 64x64 is below the VCN encoder minimum (128). The probe then
+                # fails on hardware that can encode the real 1344x752 frames.
+                "-f", "lavfi", "-i", "nullsrc=s=256x256:d=0.1",
                 "-vf", "format=nv12,hwupload",
                 "-c:v", "h264_vaapi", "-frames:v", "1",
                 "-f", "null", "-",

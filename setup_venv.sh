@@ -82,6 +82,81 @@ torch_version() {
     "${VENV_DIR}/bin/python" -c "import torch; print(torch.__version__)" 2>/dev/null || true
 }
 
+# uv venv records an absolute path to the interpreter it found. A venv created
+# in the devcontainer points at /usr/local/bin/python3.12 and at
+# /workspaces/RAFT_large_pt, neither of which exists on the host. Relink to
+# whatever `uv python find 3.12` resolves to here, and rewrite console-script
+# shebangs, instead of deleting the installed wheels.
+repair_interpreter() {
+    local py home ver script first n=0
+    py="$(uv python find 3.12)"
+    if [[ ! -x "${py}" ]]; then
+        echo "error: uv python find 3.12 returned '${py}', which is not executable" >&2
+        exit 1
+    fi
+    echo "Linking ${VENV_DIR}/bin/python -> ${py}"
+    ln -sfn "${py}" "${VENV_DIR}/bin/python"
+    home="$(dirname "${py}")"
+    ver="$("${py}" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+    python3 - "${VENV_DIR}/pyvenv.cfg" "${home}" "${ver}" <<'PY'
+import sys
+path, home, ver = sys.argv[1:]
+lines = []
+for line in open(path):
+    if line.startswith("home = "):
+        lines.append(f"home = {home}\n")
+    elif line.startswith("version_info = "):
+        lines.append(f"version_info = {ver}\n")
+    else:
+        lines.append(line)
+open(path, "w").writelines(lines)
+PY
+    local target="${VENV_DIR}/bin/python"
+    for script in "${VENV_DIR}/bin/"*; do
+        [[ -f "${script}" && ! -L "${script}" ]] || continue
+        first="$(head -n 1 "${script}" 2>/dev/null || true)"
+        if [[ "${first}" == '#!'*python* && "${first}" != "#!${target}" ]]; then
+            python3 - "${script}" "${target}" <<'PY'
+import pathlib, sys
+path, target = sys.argv[1:]
+file = pathlib.Path(path)
+data = file.read_bytes()
+nl = data.find(b"\n")
+if nl < 0:
+    raise SystemExit(0)
+file.write_bytes(b"#!" + target.encode() + data[nl:])
+PY
+            n=$((n + 1))
+        fi
+    done
+    echo "Rewrote ${n} script shebangs to ${target}"
+    repair_activate
+}
+
+# The activate scripts hard-code the venv path they were created at.
+recorded_venv_path() {
+    sed -n "s/^VIRTUAL_ENV='\(.*\)'$/\1/p" "${VENV_DIR}/bin/activate" 2>/dev/null | head -n 1
+}
+
+repair_activate() {
+    local old
+    old="$(recorded_venv_path)"
+    if [[ -z "${old}" || "${old}" == "${VENV_DIR}" ]]; then
+        return 0
+    fi
+    echo "Rewriting activate scripts: ${old} -> ${VENV_DIR}"
+    python3 - "${VENV_DIR}/bin" "${old}" "${VENV_DIR}" <<'PY'
+import pathlib, sys
+bindir, old, new = sys.argv[1:]
+for path in pathlib.Path(bindir).glob("activate*"):
+    if path.is_symlink() or not path.is_file():
+        continue
+    text = path.read_text()
+    if old in text:
+        path.write_text(text.replace(old, new))
+PY
+}
+
 verify() {
     echo ""
     echo "=== Verification ==="
@@ -111,6 +186,12 @@ link_default_venv() {
 }
 
 if [ -d "${VENV_DIR}" ]; then
+    if ! "${VENV_DIR}/bin/python" -c 'import sys' >/dev/null 2>&1; then
+        echo "Venv interpreter does not run. Repairing it in place."
+        repair_interpreter
+    else
+        repair_activate
+    fi
     current="$(torch_version)"
     if [[ "${current}" == *"${VERSION_TAG}"* ]]; then
         echo "ROCm ${ROCM_VERSION} already present in ${VENV_DIR} (${current})."
@@ -122,8 +203,9 @@ if [ -d "${VENV_DIR}" ]; then
     rm -rf "${VENV_DIR}"
 fi
 
-echo "Creating Python 3.12 venv at ${VENV_DIR} ..."
-uv venv --python 3.12 "${VENV_DIR}"
+PY_BIN="$(uv python find 3.12)"
+echo "Creating Python 3.12 venv at ${VENV_DIR} (interpreter ${PY_BIN}) ..."
+uv venv --python "${PY_BIN}" "${VENV_DIR}"
 
 unquote() {
     python3 -c "import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1]))" "$1"
