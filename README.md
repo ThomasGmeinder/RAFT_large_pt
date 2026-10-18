@@ -9,15 +9,16 @@ on Ubuntu 24.04. The environment installs **ROCm 10.0.0**
 (`torch 2.13.0+rocm10.0.0`, `torchvision 0.28.0+rocm10.0.0`, gfx1151 wheels).
 
 **Performance** at 672×376 on the integrated GPU, fp16,
-`--compile-mode reduce-overhead`. Forward time is a synced loop around
+`--compile-mode reduce-overhead`, measured on
+**GlacierPeak-NucBox-EVO-X2**. Forward time is a synced loop around
 `model(...)` only. On a `+rocm10` build the script sets `MIOPEN_FIND_MODE=1`
 (normal convolution search) before importing torch. Issue log:
 [docs/rocm_issues.md](docs/rocm_issues.md).
 
 | Stack | Forward | FPS |
 |-------|---------|-----|
-| **ROCm 10.0.0** (`MIOPEN_FIND_MODE=1`) | **26.1 ms** | **38.3** |
-| ROCm 7.2.1 | 28.4 ms | 35.2 |
+| **ROCm 10.0.0** (`MIOPEN_FIND_MODE=1`), GlacierPeak-NucBox-EVO-X2 | **26.1 ms** | **38.3** |
+| ROCm 7.2.1, GlacierPeak-NucBox-EVO-X2 | 28.4 ms | 35.2 |
 
 **Performance optimisation history** at 672×376. Rows above the last one are
 the full-video average, which also copies the flow tensor back to the CPU.
@@ -31,7 +32,7 @@ The last row is the forward time, the same measurement as the headline.
 | compiled fp16, no CorrBlock patch | 50 ms | ~20.1 (1.34×) |
 | `--compile True --param_dtype fp16` (`--compile-mode default`) | 34 ms | ~29.7 (1.97×) |
 | `--compile-mode reduce-overhead --param_dtype fp16` | ~29 ms | ~34.5 (2.33×) |
-| **ROCm 10.0.0**, `MIOPEN_FIND_MODE=1`, forward | **26.1 ms** | **38.3 (2.57×)** |
+| **ROCm 10.0.0**, `MIOPEN_FIND_MODE=1`, forward, GlacierPeak-NucBox-EVO-X2 | **26.1 ms** | **38.3 (2.57×)** |
 
 `--compile-mode reduce-overhead` uses HIP graph capture to replay RAFT's
 12-iteration GRU loop with near-zero kernel launch overhead, adding ~4–5 FPS
@@ -86,11 +87,70 @@ bash setup_venv.sh 10.0.0   # gfx1151 Python wheels only
 source .venv-rocm-7.2.1/bin/activate   # or .venv-rocm-7.2.4 / .venv-rocm-10.0.0
 ```
 
+## Notebook playbook
+
 A step-by-step colleague walkthrough is in
 [notebooks/raft_large_playbook.ipynb](notebooks/raft_large_playbook.ipynb).
-Reopen the repository in the [devcontainer](.devcontainer/README.md) first.
-The notebook uses the ROCm 10.0.0 environment created on first open.
-`FAST_MODE = True` runs one frame pair. Set it to `False` for the whole video.
+It runs `infer_optical_flow.py` through `.venv-rocm-10.0.0/bin/python` and
+expects the **RAFT Large (ROCm 10)** Jupyter kernel. Both can come from the
+dev container or from a host install. The notebook is the same either way.
+
+Either way, put `Geisskopf_Gap_Jump.mp4` (or your own clip) in the repository
+root. MP4 files are gitignored.
+
+### Option A: dev container
+
+1. Open the repository folder in Cursor or VS Code with the Dev Containers
+   extension (`ms-vscode-remote.remote-containers`).
+2. Run **Dev Containers: Reopen in Container**.
+3. Wait for `postCreateCommand`. It runs `bash setup_venv.sh 10.0.0`,
+   installs `requirements.txt`, and registers the kernel. The first create
+   downloads several GB of wheels.
+4. Open the notebook and select **RAFT Large (ROCm 10)**.
+
+The container passes `/dev/kfd` and `/dev/dri` and adds this machine's
+`video` and `render` GIDs. On another host, check those GIDs first. See
+[.devcontainer/README.md](.devcontainer/README.md).
+
+### Option B: host, without the dev container
+
+Prerequisites:
+
+- Linux with an AMD gfx1151 GPU. The ROCm 10.0.0 wheels bring their own ROCm
+  userspace, so no system ROCm install is needed.
+- [`uv`](https://docs.astral.sh/uv/) on `PATH`. It fetches Python 3.12 if the
+  host does not have it.
+- Your user in the `video` and `render` groups (`groups` to check;
+  `sudo usermod -aG video,render $USER`, then log out and back in).
+- Optional: system `ffmpeg` with VAAPI for hardware H.264 encoding. Without
+  it the script falls back to libx264 from `imageio-ffmpeg`.
+
+From the repository root, run the same steps as the container's
+`postCreateCommand`:
+
+```bash
+bash setup_venv.sh 10.0.0
+uv pip install --python .venv-rocm-10.0.0/bin/python --system-certs -r requirements.txt
+.venv-rocm-10.0.0/bin/python -m ipykernel install --user --name raft-large --display-name "RAFT Large (ROCm 10)"
+```
+
+The script defaults to `--pmode performance` and calls `sudo` to change the
+GPU power state. A Jupyter kernel has no terminal for the password prompt, so
+set the state once in a terminal before running the notebook. It resets on
+reboot.
+
+```bash
+for node in /sys/class/drm/card*/device/power_dpm_state; do
+    echo performance | sudo tee "$node"
+done
+```
+
+Then open `notebooks/raft_large_playbook.ipynb` in a local Cursor or VS Code
+window and select **RAFT Large (ROCm 10)**, or start JupyterLab from the venv:
+
+```bash
+.venv-rocm-10.0.0/bin/jupyter lab notebooks/raft_large_playbook.ipynb
+```
 
 ## Input video
 
@@ -204,10 +264,10 @@ algorithm was found to execute the required convolution`.
 On a host with ROCm 7.2.4, a `+rocm10` build reported about 0.01 ms from
 `torch.cuda.Event.elapsed_time` for work that took about 87 ms. MIOpen Find
 then rejected every solver. FAST mode (`MIOPEN_FIND_MODE=2`) ran, and it is
-slower. On this machine the host install is ROCm 7.2.1, the event time matches
-wall time, and normal Find is faster (26.1 ms/pair versus 35.6 ms in FAST).
-The script sets `MIOPEN_FIND_MODE=1` for a `+rocm10` build. ROCm 7.2.1 and
-7.2.4 wheels do not get that override.
+slower. On GlacierPeak-NucBox-EVO-X2 the host install is ROCm 7.2.1, the event
+time matches wall time, and normal Find is faster (26.1 ms/pair, 38.3 fps,
+versus 35.6 ms in FAST). The script sets `MIOPEN_FIND_MODE=1` for a `+rocm10`
+build. ROCm 7.2.1 and 7.2.4 wheels do not get that override.
 
 Replacing the host ROCm 7.2.4 libraries with the wheel copies did not
 restore the timer. The script's own timings use `time.perf_counter()` around
