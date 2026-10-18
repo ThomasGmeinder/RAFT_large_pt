@@ -14,6 +14,14 @@ import argparse
 import os
 import sys
 import time
+
+# The notebook captures stdout through a pipe, which makes Python block-buffer
+# it. Without this, "Warmup" stays invisible for the whole torch.compile.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except (AttributeError, OSError):
+    pass
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -480,6 +488,11 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
     t2_buf = t2_warm.to(device)
 
     print("Warmup ...")
+    if args.compile:
+        print(
+            f"First warmup compiles the {args.compile_mode} graph. "
+            "That pause is compile time, not inference."
+        )
     for _ in range(3):
         with torch.no_grad(), amp_ctx:
             _ = model(t1_buf, t2_buf)
@@ -510,7 +523,7 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
             writer = imageio.get_writer(
                 str(out_path), fps=out_fps, codec="libx264",
                 quality=None, macro_block_size=1,
-                output_params=["-crf", "18", "-pix_fmt", "yuv420p"],
+                output_params=["-crf", "18"],
             )
             print(f"Output : {out_path}  ({composite_w}x{composite_h}, {out_fps:.1f} fps, H.264/libx264)")
 
@@ -542,11 +555,11 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
             list_of_flows = model(t1_buf, t2_buf)
 
         torch.cuda.synchronize() if device.type == "cuda" else None
-        result = FlowResult(flow=list_of_flows[-1][0].cpu(), elapsed_s=time.perf_counter() - t0)
-        elapsed_total += result.elapsed_s
+        elapsed_s = time.perf_counter() - t0
+        elapsed_total += elapsed_s
 
-        # Post-processing: t1_p[0] and t2_p[0] are already at the same spatial
-        # size as flow_rgb — no F.resize needed
+        # Copy, color wheel, arrows, and encode are not inference.
+        result = FlowResult(flow=list_of_flows[-1][0].cpu(), elapsed_s=elapsed_s)
         flow_rgb = flow_to_image(result.flow)
         composite = build_composite_4(t1_p[0], t2_p[0], flow_rgb, result.flow)
 
@@ -570,7 +583,11 @@ def run(args: argparse.Namespace, whole_video: bool) -> None:
     if whole_video:
         writer.close()
         wall_s = time.perf_counter() - t_wall
-        print(f"Summary: {pair_idx} pairs  total={wall_s:.1f}s  avg={avg_ms:.1f} ms/pair  FPS={infer_fps:.1f}")
+        print(
+            f"Summary: {pair_idx} pairs  inference={elapsed_total:.1f}s  "
+            f"avg={avg_ms:.1f} ms/pair  FPS={infer_fps:.1f}"
+        )
+        print(f"Wall    : {wall_s:.1f}s including copy, drawing, and encode")
     else:
         magnitude = result.flow.norm(dim=0)
         print(f"Summary: 1 pair  time={avg_ms:.1f} ms  FPS={infer_fps:.1f}")
