@@ -6,7 +6,7 @@
   },
   "workspaceFolder": "/workspaces/RAFT_large_pt",
   "remoteUser": "vscode",
-  "postCreateCommand": "sudo chown vscode:vscode /home/vscode/.cache /home/vscode/.cache/torch && bash setup_venv.sh 10.0.0 && uv pip install --python .venv-rocm-10.0.0/bin/python --system-certs -r requirements.txt && .venv-rocm-10.0.0/bin/python -m ipykernel install --user --name raft-large --display-name \"RAFT Large (ROCm 10)\"",
+  "postCreateCommand": "sudo chown vscode:vscode /home/vscode/.cache /home/vscode/.cache/torch /home/vscode/.cache/uv && bash setup_venv.sh 10.0.0 && uv pip install --python .venv-rocm-10.0.0/bin/python --system-certs -r requirements.txt && .venv-rocm-10.0.0/bin/python -m ipykernel install --user --name raft-large --display-name \"RAFT Large (ROCm 10)\"",
   "runArgs": [
     "--device=/dev/kfd",
     "--device=/dev/dri",
@@ -16,7 +16,8 @@
     "--init"
   ],
   "mounts": [
-    "source=raft-large-pt-torch-cache,target=/home/vscode/.cache/torch,type=volume"
+    "source=raft-large-pt-torch-cache,target=/home/vscode/.cache/torch,type=volume",
+    "source=raft-large-pt-uv-cache,target=/home/vscode/.cache/uv,type=volume"
   ],
   "customizations": {
     "vscode": {

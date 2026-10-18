@@ -107,6 +107,11 @@ else:
 
 # Cursor and the Python extension discover ${workspace}/.venv only.
 link_default_venv() {
+    if [[ -d "${SCRIPT_DIR}/.venv" && ! -L "${SCRIPT_DIR}/.venv" ]]; then
+        echo "warning: ${SCRIPT_DIR}/.venv is a real directory, not a symlink; leaving it." >&2
+        echo "         Remove it and rerun to point .venv at .venv-rocm-${ROCM_VERSION}." >&2
+        return 0
+    fi
     ln -sfn ".venv-rocm-${ROCM_VERSION}" "${SCRIPT_DIR}/.venv"
 }
 
