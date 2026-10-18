@@ -7,6 +7,10 @@ virtualenv from `setup_venv.sh`.
 
 `mcr.microsoft.com/devcontainers/python:3.12-bookworm`.
 
+The image trusts `.devcontainer/certs/amd-com-issuing-ca.crt` before `apt`
+and `curl`. This network presents that CA for HTTPS, and without it the
+`uv` install fails with `curl: (60) SSL certificate problem`.
+
 The documented stack is the ROCm 10.0.0 Python wheels (`torch[device-gfx1151]`).
 Those wheels ship the ROCm userspace and do not use a system ROCm install.
 A `rocm/dev-ubuntu` 7.2 image would put host ROCm libraries next to those
@@ -29,6 +33,11 @@ Replace `--group-add` if those GIDs differ, then rebuild.
 Dev Containers: **Reopen in Container**. `postCreateCommand` runs
 `bash setup_venv.sh 10.0.0`, then installs `requirements.txt` into that venv
 and registers the `raft-large` Jupyter kernel.
+
+The first create downloads several GB of ROCm PyTorch wheels. The `uv` cache
+lives in the named volume `raft-large-pt-uv-cache` (`/home/vscode/.cache/uv`),
+so rebuilds reuse it. The venv itself is in the bind-mounted working tree, and
+`setup_venv.sh` skips the install when the right torch is already there.
 
 RAFT Large weights download on the first inference into the named volume
 `raft-large-pt-torch-cache` (`/home/vscode/.cache/torch`). They are not baked
